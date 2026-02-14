@@ -12,12 +12,12 @@ Prometheus exporter для получения информации по билл
 
 ### Запуск с помощью docker-compose
 
-Создаем `docker-compose.yml` файл:
+Создаем `compose.yaml` файл:
 
 ```yaml
 services:
   selectel_exporter:
-    image: mxssl/selectel-billing-exporter:1.1.5
+    image: mxssl/selectel-billing-exporter:1.1.6
     ports:
       - "6789:80"
     restart: always
