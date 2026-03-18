@@ -21,6 +21,29 @@ const (
 	hoursPerDay = 24.0
 )
 
+// serviceDisplayNames maps Servercore provider_key values to human-readable names.
+var serviceDisplayNames = map[string]string{
+	"vpc":        "Cloud Compute",
+	"dbaas":      "Managed DB",
+	"mks":        "Managed K8s",
+	"storage":    "Object Storage",
+	"cdn":        "CDN",
+	"craas":      "Container Registry",
+	"serverless": "Serverless",
+	"vmware":     "VMware",
+	"ones":       "1C",
+	"mobfarm":    "Mobile Farm",
+	"ses":        "Email (SES)",
+}
+
+// humanizeService returns a display name for a Servercore provider_key.
+func humanizeService(key string) string {
+	if name, ok := serviceDisplayNames[key]; ok {
+		return name
+	}
+	return key
+}
+
 // Exporter collects Servercore billing metrics and implements prometheus.Collector.
 type Exporter struct {
 	client *api.Client
@@ -81,12 +104,12 @@ func New(client *api.Client) *Exporter {
 		),
 		resourceCost: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "resource", "cost"),
-			"Current month resource cost by project, service and metric in account currency.",
+			"Current billing period resource cost by project, service and metric in account currency.",
 			[]string{"project", "service", "metric"}, nil,
 		),
 		resourceQuantity: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "resource", "quantity"),
-			"Current month resource quantity by project, service, metric and unit.",
+			"Cumulative resource usage for the current billing period (e.g. core-hours, MB-hours).",
 			[]string{"project", "service", "metric", "unit"}, nil,
 		),
 		scrapeSuccess: prometheus.NewDesc(
@@ -206,7 +229,7 @@ func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
 		ch <- prometheus.MustNewConstMetric(
 			e.consumptionCost, prometheus.GaugeValue,
 			float64(item.Value)/kopecksPerUnit,
-			project, item.ProviderKey,
+			project, humanizeService(item.ProviderKey),
 		)
 	}
 
@@ -228,12 +251,12 @@ func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
 		ch <- prometheus.MustNewConstMetric(
 			e.resourceCost, prometheus.GaugeValue,
 			float64(item.Value)/kopecksPerUnit,
-			project, item.ProviderKey, item.Metric.ID,
+			project, humanizeService(item.ProviderKey), item.Metric.ID,
 		)
 		ch <- prometheus.MustNewConstMetric(
 			e.resourceQuantity, prometheus.GaugeValue,
 			item.Metric.Quantity,
-			project, item.ProviderKey, item.Metric.ID, item.Metric.Unit,
+			project, humanizeService(item.ProviderKey), item.Metric.ID, item.Metric.Unit,
 		)
 	}
 

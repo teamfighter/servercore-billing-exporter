@@ -362,7 +362,7 @@ func TestExporterConsumptionNilProject(t *testing.T) {
 	expected := strings.NewReader(`
 		# HELP sc_consumption_cost Current month consumption cost by project and service in account currency.
 		# TYPE sc_consumption_cost gauge
-		sc_consumption_cost{project="unknown",service="vpc"} 1
+		sc_consumption_cost{project="unknown",service="Cloud Compute"} 1
 	`)
 
 	if err := testutil.CollectAndCompare(exp, expected, "sc_consumption_cost"); err != nil {
