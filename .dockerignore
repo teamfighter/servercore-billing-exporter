@@ -1,0 +1,14 @@
+.git
+.github
+.gitignore
+.goreleaser.yml
+.dockerignore
+testdata
+*_test.go
+coverage.out
+sonar-project.properties
+CHANGELOG.md
+README.md
+LICENSE
+Makefile
+*.md
