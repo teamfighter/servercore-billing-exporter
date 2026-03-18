@@ -173,6 +173,10 @@ make vet
 
 Authentication is done via `X-Token` header with a static API token.
 
+## Acknowledgments
+
+This project is based on [selectel-billing-exporter](https://github.com/mxssl/selectel-billing-exporter) by [@mxssl](https://github.com/mxssl), adapted for the Servercore cloud platform.
+
 ## License
 
 MIT — see [LICENSE](LICENSE)
