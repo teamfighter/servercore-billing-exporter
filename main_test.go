@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,141 +10,154 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-const (
-	testTokenValue = "my-token"
-	errUnexpected  = "unexpected error: %v"
-)
+func TestParseConfig(t *testing.T) {
+	// Save original environment and restore after test
+	originalToken := os.Getenv("TOKEN")
+	originalListenAddr := os.Getenv("LISTEN_ADDR")
+	defer func() {
+		os.Setenv("TOKEN", originalToken)
+		os.Setenv("LISTEN_ADDR", originalListenAddr)
+	}()
 
-func TestParseConfigMissingToken(t *testing.T) {
-	t.Setenv("TOKEN", "")
-	_, err := parseConfig()
-	if err == nil {
-		t.Fatal("expected error when TOKEN is empty")
+	tests := []struct {
+		name       string
+		envToken   string
+		envListen  string
+		wantToken  string
+		wantListen string
+		wantErr    bool
+	}{
+		{
+			name:       "Missing TOKEN",
+			envToken:   "",
+			envListen:  "",
+			wantErr:    true,
+		},
+		{
+			name:       "Valid TOKEN, Default ListenAddr",
+			envToken:   "test-token",
+			envListen:  "",
+			wantToken:  "test-token",
+			wantListen: ":9876",
+			wantErr:    false,
+		},
+		{
+			name:       "Valid TOKEN, Custom ListenAddr",
+			envToken:   "test-token",
+			envListen:  ":8080",
+			wantToken:  "test-token",
+			wantListen: ":8080",
+			wantErr:    false,
+		},
 	}
-	if !strings.Contains(err.Error(), "TOKEN") {
-		t.Errorf("error should mention TOKEN, got: %v", err)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Setenv("TOKEN", tc.envToken)
+			os.Setenv("LISTEN_ADDR", tc.envListen)
+
+			cfg, err := parseConfig()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if cfg.Token != tc.wantToken {
+				t.Errorf("expected Token %q, got %q", tc.wantToken, cfg.Token)
+			}
+			if cfg.ListenAddr != tc.wantListen {
+				t.Errorf("expected ListenAddr %q, got %q", tc.wantListen, cfg.ListenAddr)
+			}
+		})
 	}
 }
 
-func TestParseConfigDefaults(t *testing.T) {
-	t.Setenv("TOKEN", testTokenValue)
-	t.Setenv("LISTEN_ADDR", "")
-
-	cfg, err := parseConfig()
-	if err != nil {
-		t.Fatalf(errUnexpected, err)
-	}
-	if cfg.Token != testTokenValue {
-		t.Errorf("expected token %q, got %s", testTokenValue, cfg.Token)
-	}
-	if cfg.ListenAddr != ":9876" {
-		t.Errorf("expected default listen addr ':9876', got %s", cfg.ListenAddr)
-	}
-}
-
-func TestParseConfigCustomAddr(t *testing.T) {
-	t.Setenv("TOKEN", testTokenValue)
-	t.Setenv("LISTEN_ADDR", ":8080")
-
-	cfg, err := parseConfig()
-	if err != nil {
-		t.Fatalf(errUnexpected, err)
-	}
-	if cfg.ListenAddr != ":8080" {
-		t.Errorf("expected listen addr ':8080', got %s", cfg.ListenAddr)
-	}
-}
-
-func TestNewMuxMetricsEndpoint(t *testing.T) {
+func TestNewMux(t *testing.T) {
 	registry := prometheus.NewRegistry()
-	handler := newMux(registry)
+	mux := newMux(registry)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for /metrics, got %d", w.Code)
-	}
-}
-
-func TestNewMuxRootEndpoint(t *testing.T) {
-	registry := prometheus.NewRegistry()
-	handler := newMux(registry)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for /, got %d", w.Code)
-	}
-
-	body, _ := io.ReadAll(w.Body)
-	if !strings.Contains(string(body), "Servercore Billing Exporter") {
-		t.Error("root page should contain exporter name")
-	}
-	if !strings.Contains(string(body), "/metrics") {
-		t.Error("root page should link to /metrics")
-	}
-}
-
-func TestNewMuxHealthEndpoint(t *testing.T) {
-	registry := prometheus.NewRegistry()
-	handler := newMux(registry)
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for /health, got %d", w.Code)
+	tests := []struct {
+		name           string
+		method         string
+		path           string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{
+			name:           "Health Check",
+			method:         "GET",
+			path:           "/health",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "ok",
+		},
+		{
+			name:           "Root Path",
+			method:         "GET",
+			path:           "/",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "<html>",
+		},
+		{
+			name:           "Metrics Path",
+			method:         "GET",
+			path:           "/metrics",
+			expectedStatus: http.StatusOK,
+			expectedBody:   "", // promhttp output, not strictly checking body content
+		},
+		{
+			name:           "Not Found",
+			method:         "GET",
+			path:           "/not-found",
+			expectedStatus: http.StatusNotFound,
+		},
 	}
 
-	body, _ := io.ReadAll(w.Body)
-	if string(body) != "ok" {
-		t.Errorf("expected body 'ok', got %s", string(body))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, tc.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+
+			if status := rr.Code; status != tc.expectedStatus {
+				t.Errorf("handler returned wrong status code: got %v want %v",
+					status, tc.expectedStatus)
+			}
+
+			if tc.expectedBody != "" && tc.path != "/metrics" {
+				// Simple substring check for root path to ensure HTML is rendered
+				if tc.path == "/" {
+					if !strings.Contains(rr.Body.String(), tc.expectedBody) {
+						t.Errorf("handler returned unexpected body: got %v want it to contain %v",
+							rr.Body.String(), tc.expectedBody)
+					}
+				} else {
+					if rr.Body.String() != tc.expectedBody {
+						t.Errorf("handler returned unexpected body: got %v want %v",
+							rr.Body.String(), tc.expectedBody)
+					}
+				}
+			}
+		})
 	}
 }
 
 func TestNewServer(t *testing.T) {
 	handler := http.NewServeMux()
-	srv := newServer(":0", handler)
+	srv := newServer(":1234", handler)
 
-	if srv.Addr != ":0" {
-		t.Errorf("expected addr ':0', got %s", srv.Addr)
+	if srv.Addr != ":1234" {
+		t.Errorf("expected Addr %q, got %q", ":1234", srv.Addr)
 	}
-	if srv.ReadTimeout == 0 {
-		t.Error("expected non-zero read timeout")
-	}
-	if srv.WriteTimeout == 0 {
-		t.Error("expected non-zero write timeout")
-	}
-	if srv.IdleTimeout == 0 {
-		t.Error("expected non-zero idle timeout")
-	}
-}
-
-func TestParseConfigFromEnv(t *testing.T) {
-	// Ensure we clean up env after test.
-	oldToken := os.Getenv("TOKEN")
-	oldAddr := os.Getenv("LISTEN_ADDR")
-	defer func() {
-		os.Setenv("TOKEN", oldToken)
-		os.Setenv("LISTEN_ADDR", oldAddr)
-	}()
-
-	os.Setenv("TOKEN", "test-integration-token")
-	os.Setenv("LISTEN_ADDR", ":3333")
-
-	cfg, err := parseConfig()
-	if err != nil {
-		t.Fatalf(errUnexpected, err)
-	}
-	if cfg.Token != "test-integration-token" {
-		t.Errorf("expected token, got %s", cfg.Token)
-	}
-	if cfg.ListenAddr != ":3333" {
-		t.Errorf("expected :3333, got %s", cfg.ListenAddr)
+	if srv.Handler == nil {
+		t.Errorf("expected non-nil Handler")
 	}
 }

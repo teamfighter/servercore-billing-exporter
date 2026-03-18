@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker Compose configuration
 - GitHub Actions CI with SonarCloud integration
 - GoReleaser-based release workflow (semver tags)
-- Unit tests with 90%+ coverage
+- Comprehensive test suite covering edge-cases (84% total coverage, 100% for exporter module)
 - Comprehensive README with deployment examples (Docker, Kubernetes, binary)
 
 [Unreleased]: https://github.com/teamfighter/servercore-billing-exporter/compare/v0.1.0...HEAD

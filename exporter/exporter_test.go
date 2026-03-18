@@ -369,3 +369,106 @@ func TestExporterConsumptionNilProject(t *testing.T) {
 		t.Errorf("consumption with nil project should use 'unknown': %v", err)
 	}
 }
+
+func TestHumanizeService(t *testing.T) {
+	if got := humanizeService("vpc"); got != "Cloud Compute" {
+		t.Errorf("expected 'Cloud Compute', got %q", got)
+	}
+	if got := humanizeService("unknown_service_123"); got != "unknown_service_123" {
+		t.Errorf("expected 'unknown_service_123', got %q", got)
+	}
+}
+
+func TestClarifyUnit(t *testing.T) {
+	tests := []struct {
+		metric string
+		unit   string
+		want   string
+	}{
+		{"traffic-req-1", "item", "requests"},
+		{"traffic-out", "GB", "GB"},
+		{"ram", "MB", "MB-hours"},
+		{"ip", "item", "item-hours"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.metric+"_"+tc.unit, func(t *testing.T) {
+			got := clarifyUnit(tc.metric, tc.unit)
+			if got != tc.want {
+				t.Errorf("clarifyUnit(%q, %q) = %q; want %q", tc.metric, tc.unit, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExporterConsumptionProjectMetricFailure(t *testing.T) {
+	// Server where project succeeds but project_metric fails
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerCType, headerJSON)
+		switch r.URL.Path {
+		case pathBalances:
+			w.Write([]byte(`{"data":{"billings":[{"final_sum":100,"debt_sum":0,"balances":[],"debt":[]}]},"settings":{"currency":"rub"}}`))
+		case pathPrediction:
+			w.Write([]byte(`{"status":"success","data":{"primary":100}}`))
+		case pathConsumption:
+			if r.URL.Query().Get("group_type") == "project_metric" {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			w.Write([]byte(`{"status":"success","data":[]}`))
+		default:
+			http.Error(w, errNotFound, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	exp := New(client)
+
+	// Since consumption/project_metric failed, scrape_success should be 0.
+	expected := strings.NewReader(`
+		# HELP sc_scrape_success Whether the last scrape was successful (1 = success, 0 = failure).
+		# TYPE sc_scrape_success gauge
+		sc_scrape_success 0
+	`)
+
+	if err := testutil.CollectAndCompare(exp, expected, "sc_scrape_success"); err != nil {
+		t.Errorf("sc_scrape_success should be 0 on partial consumption failure: %v", err)
+	}
+}
+
+func TestExporterConsumptionNilMetric(t *testing.T) {
+	// Server returns valid metric response but Metric object is nil
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerCType, headerJSON)
+		switch r.URL.Path {
+		case pathBalances:
+			w.Write([]byte(`{"data":{"billings":[{"final_sum":100,"debt_sum":0,"balances":[],"debt":[]}]},"settings":{"currency":"rub"}}`))
+		case pathPrediction:
+			w.Write([]byte(`{"status":"success","data":{"primary":100}}`))
+		case pathConsumption:
+			if r.URL.Query().Get("group_type") == "project_metric" {
+				w.Write([]byte(`{"status":"success","data":[{"account_id":"1","provider_key":"vpc","value":100,"period":"2026-03","project":null,"metric":null}]}`))
+				return
+			}
+			w.Write([]byte(`{"status":"success","data":[]}`))
+		default:
+			http.Error(w, errNotFound, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	exp := New(client)
+
+	// It should succeed, but metric should be skipped -> no resourceCost emitted
+	ch := make(chan prometheus.Metric, 50)
+	exp.Collect(ch)
+	close(ch)
+
+	for m := range ch {
+		if strings.Contains(m.Desc().String(), "resource_cost") {
+			t.Error("expected no resource_cost when metric is nil")
+		}
+	}
+}
