@@ -1,21 +1,13 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.26-alpine as builder
-WORKDIR /go/src/github.com/mxssl/selectel-billing-exporter
+FROM golang:1.23-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN <<EOF
-  apk add --no-cache \
-    ca-certificates \
-    curl \
-    git
-EOF
-RUN <<EOF
-  CGO_ENABLED=0 \
-  go build -v -o app
-EOF
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /servercore-billing-exporter
 
-FROM alpine:3.23
-WORKDIR /
+FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
-COPY --from=builder /go/src/github.com/mxssl/selectel-billing-exporter .
-RUN chmod +x app
-CMD ["./app"]
+COPY --from=builder /servercore-billing-exporter /usr/local/bin/
+EXPOSE 9876
+ENTRYPOINT ["servercore-billing-exporter"]

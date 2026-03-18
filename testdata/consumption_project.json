@@ -1,0 +1,45 @@
+{
+    "status": "success",
+    "data": [
+        {
+            "account_id": "100001",
+            "provider_key": "vpc",
+            "value": 15000000000,
+            "period": "2025-03-01T00:00:00",
+            "project": {"id": "proj-main", "name": "production"},
+            "metric": null,
+            "object": null,
+            "provision_end": "2025-03-18T00:00:00"
+        },
+        {
+            "account_id": "100001",
+            "provider_key": "mks",
+            "value": 250000000,
+            "period": "2025-03-01T00:00:00",
+            "project": {"id": "proj-main", "name": "production"},
+            "metric": null,
+            "object": null,
+            "provision_end": "2025-03-18T00:00:00"
+        },
+        {
+            "account_id": "100001",
+            "provider_key": "storage",
+            "value": 100000000,
+            "period": "2025-03-01T00:00:00",
+            "project": {"id": "proj-main", "name": "production"},
+            "metric": null,
+            "object": null,
+            "provision_end": "2025-03-18T00:00:00"
+        },
+        {
+            "account_id": "100001",
+            "provider_key": "vpc",
+            "value": 80000000,
+            "period": "2025-03-01T00:00:00",
+            "project": {"id": "proj-infra", "name": "infrastructure"},
+            "metric": null,
+            "object": null,
+            "provision_end": "2025-03-18T00:00:00"
+        }
+    ]
+}

@@ -1,9 +1,0 @@
-# syntax=docker/dockerfile:1
-FROM alpine:3.23
-WORKDIR /
-RUN <<EOF
-  apk add --no-cache ca-certificates
-EOF
-COPY selectel-billing-exporter /app
-RUN chmod +x app
-CMD ["./app"]
