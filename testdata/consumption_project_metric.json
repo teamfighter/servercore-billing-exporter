@@ -1,0 +1,35 @@
+{
+    "status": "success",
+    "data": [
+        {
+            "account_id": "100001",
+            "provider_key": "vpc",
+            "value": 250000000,
+            "period": "2025-03-17T00:00:00",
+            "project": {"id": "proj-main", "name": "production"},
+            "metric": {"id": "compute_cores", "name": "vCPU", "quantity": 32000, "unit": "item", "region": null},
+            "object": null,
+            "provision_end": "2025-03-18T00:00:00"
+        },
+        {
+            "account_id": "100001",
+            "provider_key": "vpc",
+            "value": 300000000,
+            "period": "2025-03-17T00:00:00",
+            "project": {"id": "proj-main", "name": "production"},
+            "metric": {"id": "compute_ram", "name": "RAM", "quantity": 65536000, "unit": "MB", "region": null},
+            "object": null,
+            "provision_end": "2025-03-18T00:00:00"
+        },
+        {
+            "account_id": "100001",
+            "provider_key": "vpc",
+            "value": 1000000,
+            "period": "2025-03-17T00:00:00",
+            "project": {"id": "proj-main", "name": "production"},
+            "metric": {"id": "network_floatingips", "name": "Public IPs", "quantity": 500, "unit": "item", "region": null},
+            "object": null,
+            "provision_end": "2025-03-18T00:00:00"
+        }
+    ]
+}

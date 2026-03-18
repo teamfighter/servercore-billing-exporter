@@ -1,122 +1,182 @@
-# Selectel Billing Exporter
+# Servercore Billing Exporter
 
-Prometheus exporter для получения информации по биллингу аккаунта облака [Selectel](https://selectel.ru).
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Как работает экспортер
+Prometheus exporter for [Servercore](https://servercore.com) cloud billing data.
 
-Экспортер раз в час ходит по url `https://api.selectel.ru/v3/balances` с токеном в запросе, получает в json формате инфу по балансу средств на счете и отдает ее по url `/metrics` в формате prometheus.
+Collects account balance, debt, consumption statistics, and billing predictions from the Servercore API and exposes them as Prometheus metrics.
 
-Для работы экспортера нужно получить API [токен](https://my.selectel.ru/profile/apikeys)
+## Metrics
 
-## Как запустить
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `sc_balance_by_type` | Gauge | `type` | Balance by type (main, bonus) |
+| `sc_balance_total` | Gauge | — | Total account balance |
+| `sc_debt_total` | Gauge | — | Total account debt |
+| `sc_debt_by_service` | Gauge | `service` | Debt per service (vpc, dbaas, mks, ...) |
+| `sc_prediction_days` | Gauge | `billing_type` | Days until balance exhaustion per billing type |
+| `sc_consumption_cost` | Gauge | `project`, `service` | Monthly cost by project × service |
+| `sc_resource_cost` | Gauge | `project`, `service`, `metric` | Cost per resource metric |
+| `sc_resource_quantity` | Gauge | `project`, `service`, `metric`, `unit` | Resource quantity (vCPU, RAM, disk, etc.) |
+| `sc_scrape_success` | Gauge | — | 1 if last scrape succeeded, 0 otherwise |
+| `sc_scrape_duration_seconds` | Gauge | — | Duration of last API scrape |
 
-### Запуск с помощью docker-compose
+## Configuration
 
-Создаем `compose.yaml` файл:
+| Environment Variable | Required | Default | Description |
+|---------------------|----------|---------|-------------|
+| `TOKEN` | ✅ | — | Servercore API static token |
+| `LISTEN_ADDR` | ❌ | `:9876` | HTTP listen address |
+
+### Getting a token
+
+1. Go to [Servercore Control Panel](https://my.servercore.com/profile/apikeys)
+2. Create a new API key
+3. Copy the static token
+
+## Running
+
+### Docker Compose
 
 ```yaml
 services:
-  selectel_exporter:
-    image: mxssl/selectel-billing-exporter:1.1.6
+  servercore-billing-exporter:
+    image: ghcr.io/teamfighter/servercore-billing-exporter:latest
     ports:
-      - "6789:80"
-    restart: always
+      - "9876:9876"
+    restart: unless-stopped
     environment:
-      TOKEN: <тут_указываем_токен>
+      TOKEN: your_servercore_api_token
 ```
-
-Запускаем экспортер:
 
 ```sh
 docker compose up -d
+curl http://localhost:9876/metrics
 ```
 
-Проверить работу экспортера:
+### Docker
 
 ```sh
-docker compose ps
-docker compose logs
+docker run -d \
+  -p 9876:9876 \
+  -e TOKEN=your_token \
+  ghcr.io/teamfighter/servercore-billing-exporter:latest
 ```
 
-Метрики доступны по url `your_ip:6789/metrics`
+### Binary
 
-## Kubernetes
+```sh
+export TOKEN=your_token
+./servercore-billing-exporter
+```
 
-### helm
-
-[Установка helm чарта](https://github.com/mxssl/helm-charts/tree/main/charts/selectel-billing-exporter)
-
-### Создание манифестов вручную
+### Kubernetes
 
 ```yaml
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: selectel-billing
-  namespace: exporters
+  name: servercore-billing
+  namespace: monitoring
 spec:
   selector:
     matchLabels:
-      component: selectel-billing
+      app: servercore-billing
   template:
     metadata:
       labels:
-        component: selectel-billing
+        app: servercore-billing
     spec:
       containers:
         - name: exporter
-          image: mxssl/selectel-billing-exporter:1.1.5
-          command: ["./app"]
+          image: ghcr.io/teamfighter/servercore-billing-exporter:latest
           ports:
-            - containerPort: 80
+            - containerPort: 9876
           env:
             - name: TOKEN
-              value: <YOUR-TOKEN>
-
+              valueFrom:
+                secretKeyRef:
+                  name: servercore-billing
+                  key: token
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: selectel-billing
-  namespace: exporters
+  name: servercore-billing
+  namespace: monitoring
 spec:
   ports:
-    - name: exporter
-      port: 6789
-      targetPort: 80
+    - name: metrics
+      port: 9876
+      targetPort: 9876
   selector:
-    component: selectel-billing
+    app: servercore-billing
 ```
+
+## Prometheus Configuration
+
+```yaml
+scrape_configs:
+  - job_name: servercore_billing
+    scrape_interval: 60m
+    static_configs:
+      - targets: ["servercore-billing:9876"]
+```
+
+## Alert Examples
+
+### Low balance alert
+
+```yaml
+groups:
+  - name: servercore_billing
+    rules:
+      - alert: ServercoreLowBalance
+        expr: sc_prediction_days < 30
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Servercore balance will run out in {{ $value }} days"
+          description: "Account balance is predicted to be exhausted within 30 days."
+
+      - alert: ServercoreDebt
+        expr: sc_debt_total > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Servercore account has debt: {{ $value }}"
+```
+
+## Development
 
 ```sh
-kubectl apply -n exporters -f your-file.yaml
+# Run tests
+make test
+
+# Build binary
+make build
+
+# Run linter
+make vet
 ```
 
-Внутри кластера метрики будут доступны по адресу `selectel-billing.exporters.svc.cluster.local:6789/metrics`
+## API Endpoints Used
 
-## Настройка для prometheus
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v3/balances` | Account balance and debt |
+| `GET /v2/billing/prediction` | Days until balance exhaustion |
+| `GET /v1/cloud_billing/statistic/consumption` | Monthly consumption data |
 
-```yaml
-- job_name: "selectel_billing"
-  scrape_interval: 60m
-  static_configs:
-    - targets: ["exporter_address:6789"]
-```
+Authentication is done via `X-Token` header with a static API token.
 
-## Пример алерта для alertmanager
+## Acknowledgments
 
-```yaml
-- alert: selectel_billing
-  expr: selectel_billing_final_sum{job="selectel_billing"} / 100 < 30000
-  for: 180s
-  labels:
-    severity: warning
-  annotations:
-    summary: "{{ $labels.instance }}: В хостинге Selectel на счете меньше 30 000 рублей"
-    description: "Необходимо пополнить счет в хостинге Selectel"
-```
+This project is based on [selectel-billing-exporter](https://github.com/mxssl/selectel-billing-exporter) by [@mxssl](https://github.com/mxssl), adapted for the Servercore cloud platform.
 
-## Дашборд для графаны
+## License
 
-[Дашборд](https://grafana.com/dashboards/9315)
+MIT — see [LICENSE](LICENSE)

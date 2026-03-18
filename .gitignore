@@ -1,4 +1,15 @@
-app
-.vscode
-dist
-selectel-billing-exporter
+# Binary
+servercore-billing-exporter
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/

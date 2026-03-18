@@ -1,0 +1,27 @@
+{
+    "data": {
+        "billings": [
+            {
+                "billing_type": "primary",
+                "balances_values_sum": 5000000000,
+                "final_sum": 5000000000,
+                "debt_sum": 0,
+                "balances": [
+                    {"balance_type": "main", "value": 4500000000},
+                    {"balance_type": "bonus", "value": 500000000}
+                ],
+                "debt": [
+                    {"service_type": "vpc", "debt_value": 0},
+                    {"service_type": "dbaas", "debt_value": 0},
+                    {"service_type": "mks", "debt_value": 0},
+                    {"service_type": "storage", "debt_value": 0},
+                    {"service_type": "cdn", "debt_value": 0}
+                ]
+            }
+        ]
+    },
+    "settings": {
+        "currency": "rub",
+        "mode": "prepay"
+    }
+}
