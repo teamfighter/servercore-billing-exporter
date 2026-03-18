@@ -4,6 +4,7 @@ package exporter
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/teamfighter/servercore-billing-exporter/api"
@@ -42,6 +43,23 @@ func humanizeService(key string) string {
 		return name
 	}
 	return key
+}
+
+// clarifyUnit fixes ambiguous API units. Servercore bills most resources by time,
+// returning cumulative quantity (e.g., core-hours) but generic units ("item", "MB").
+func clarifyUnit(metric string, unit string) string {
+	if strings.HasPrefix(metric, "traffic-req") {
+		return "requests"
+	}
+	if strings.HasPrefix(metric, "traffic-") {
+		return unit // "MB" or "GB" for pure volume is correct
+	}
+	
+	// Everything else is a time-billed cumulative quantity.
+	if unit == "item" {
+		return "item-hours"
+	}
+	return unit + "-hours"
 }
 
 // Exporter collects Servercore billing metrics and implements prometheus.Collector.
@@ -256,7 +274,7 @@ func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
 		ch <- prometheus.MustNewConstMetric(
 			e.resourceQuantity, prometheus.GaugeValue,
 			item.Metric.Quantity,
-			project, humanizeService(item.ProviderKey), item.Metric.ID, item.Metric.Unit,
+			project, humanizeService(item.ProviderKey), item.Metric.ID, clarifyUnit(item.Metric.ID, item.Metric.Unit),
 		)
 	}
 
