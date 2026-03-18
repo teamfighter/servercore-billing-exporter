@@ -161,7 +161,7 @@ func TestExporterBalanceTotal(t *testing.T) {
 	expected := strings.NewReader(`
 		# HELP sc_balance_total Total account balance in account currency.
 		# TYPE sc_balance_total gauge
-		sc_balance_total 5e+09
+		sc_balance_total 5e+07
 	`)
 
 	if err := testutil.CollectAndCompare(exp, expected, "sc_balance_total"); err != nil {
@@ -179,8 +179,8 @@ func TestExporterPrediction(t *testing.T) {
 	expected := strings.NewReader(`
 		# HELP sc_prediction_days Estimated number of days until the balance is exhausted.
 		# TYPE sc_prediction_days gauge
-		sc_prediction_days{billing_type="primary"} 250
-		sc_prediction_days{billing_type="vpc"} 180
+		sc_prediction_days{billing_type="primary"} 10.416666666666666
+		sc_prediction_days{billing_type="vpc"} 7.5
 	`)
 
 	if err := testutil.CollectAndCompare(exp, expected, "sc_prediction_days"); err != nil {
@@ -362,7 +362,7 @@ func TestExporterConsumptionNilProject(t *testing.T) {
 	expected := strings.NewReader(`
 		# HELP sc_consumption_cost Current month consumption cost by project and service in account currency.
 		# TYPE sc_consumption_cost gauge
-		sc_consumption_cost{project="unknown",service="vpc"} 100
+		sc_consumption_cost{project="unknown",service="vpc"} 1
 	`)
 
 	if err := testutil.CollectAndCompare(exp, expected, "sc_consumption_cost"); err != nil {

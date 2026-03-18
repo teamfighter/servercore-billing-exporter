@@ -11,7 +11,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-const namespace = "sc"
+const (
+	namespace = "sc"
+
+	// kopecksPerUnit converts API monetary values (kopecks) to currency units.
+	kopecksPerUnit = 100.0
+
+	// hoursPerDay converts prediction hours to days.
+	hoursPerDay = 24.0
+)
 
 // Exporter collects Servercore billing metrics and implements prometheus.Collector.
 type Exporter struct {
@@ -143,15 +151,15 @@ func (e *Exporter) collectBalance(ch chan<- prometheus.Metric) error {
 	}
 
 	b := resp.Data.Billings[0]
-	ch <- prometheus.MustNewConstMetric(e.balanceTotal, prometheus.GaugeValue, float64(b.FinalSum))
-	ch <- prometheus.MustNewConstMetric(e.debtTotal, prometheus.GaugeValue, float64(b.DebtSum))
+	ch <- prometheus.MustNewConstMetric(e.balanceTotal, prometheus.GaugeValue, float64(b.FinalSum)/kopecksPerUnit)
+	ch <- prometheus.MustNewConstMetric(e.debtTotal, prometheus.GaugeValue, float64(b.DebtSum)/kopecksPerUnit)
 
 	for _, bal := range b.Balances {
-		ch <- prometheus.MustNewConstMetric(e.balanceByType, prometheus.GaugeValue, float64(bal.Value), bal.BalanceType)
+		ch <- prometheus.MustNewConstMetric(e.balanceByType, prometheus.GaugeValue, float64(bal.Value)/kopecksPerUnit, bal.BalanceType)
 	}
 
 	for _, d := range b.Debt {
-		ch <- prometheus.MustNewConstMetric(e.debtByService, prometheus.GaugeValue, float64(d.DebtValue), d.ServiceType)
+		ch <- prometheus.MustNewConstMetric(e.debtByService, prometheus.GaugeValue, float64(d.DebtValue)/kopecksPerUnit, d.ServiceType)
 	}
 
 	return nil
@@ -172,7 +180,7 @@ func (e *Exporter) collectPrediction(ch chan<- prometheus.Metric) error {
 	}
 	for billingType, val := range predictions {
 		if val != nil {
-			ch <- prometheus.MustNewConstMetric(e.predictionDays, prometheus.GaugeValue, *val, billingType)
+			ch <- prometheus.MustNewConstMetric(e.predictionDays, prometheus.GaugeValue, *val/hoursPerDay, billingType)
 		}
 	}
 	return nil
@@ -197,7 +205,7 @@ func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
 		}
 		ch <- prometheus.MustNewConstMetric(
 			e.consumptionCost, prometheus.GaugeValue,
-			float64(item.Value),
+			float64(item.Value)/kopecksPerUnit,
 			project, item.ProviderKey,
 		)
 	}
@@ -219,7 +227,7 @@ func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
 
 		ch <- prometheus.MustNewConstMetric(
 			e.resourceCost, prometheus.GaugeValue,
-			float64(item.Value),
+			float64(item.Value)/kopecksPerUnit,
 			project, item.ProviderKey, item.Metric.ID,
 		)
 		ch <- prometheus.MustNewConstMetric(
