@@ -24,7 +24,7 @@ type Exporter struct {
 	debtByService *prometheus.Desc
 
 	// Prediction.
-	predictionDays *prometheus.Desc
+	predictionDays *prometheus.Desc // now with billing_type label
 
 	// Consumption.
 	consumptionCost     *prometheus.Desc
@@ -64,7 +64,7 @@ func New(client *api.Client) *Exporter {
 		predictionDays: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "prediction", "days"),
 			"Estimated number of days until the balance is exhausted.",
-			nil, nil,
+			[]string{"billing_type"}, nil,
 		),
 		consumptionCost: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "consumption", "cost"),
@@ -163,7 +163,18 @@ func (e *Exporter) collectPrediction(ch chan<- prometheus.Metric) error {
 		return err
 	}
 
-	ch <- prometheus.MustNewConstMetric(e.predictionDays, prometheus.GaugeValue, resp.Data.Primary)
+	// Emit a metric for each non-nil billing type prediction.
+	predictions := map[string]*float64{
+		"primary": resp.Data.Primary,
+		"storage": resp.Data.Storage,
+		"vmware":  resp.Data.Vmware,
+		"vpc":     resp.Data.VPC,
+	}
+	for billingType, val := range predictions {
+		if val != nil {
+			ch <- prometheus.MustNewConstMetric(e.predictionDays, prometheus.GaugeValue, *val, billingType)
+		}
+	}
 	return nil
 }
 

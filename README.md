@@ -15,7 +15,7 @@ Collects account balance, debt, consumption statistics, and billing predictions 
 | `sc_balance_total` | Gauge | — | Total account balance |
 | `sc_debt_total` | Gauge | — | Total account debt |
 | `sc_debt_by_service` | Gauge | `service` | Debt per service (vpc, dbaas, mks, ...) |
-| `sc_prediction_days` | Gauge | — | Days until balance exhaustion |
+| `sc_prediction_days` | Gauge | `billing_type` | Days until balance exhaustion per billing type |
 | `sc_consumption_cost` | Gauge | `project`, `service` | Monthly cost by project × service |
 | `sc_resource_cost` | Gauge | `project`, `service`, `metric` | Cost per resource metric |
 | `sc_resource_quantity` | Gauge | `project`, `service`, `metric`, `unit` | Resource quantity (vCPU, RAM, disk, etc.) |

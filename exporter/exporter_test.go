@@ -89,14 +89,14 @@ func TestExporterCollect(t *testing.T) {
 	// balance_total: 1
 	// debt_total: 1
 	// debt_by_service: 5 (vpc, dbaas, mks, storage, cdn)
-	// prediction_days: 1
-	// consumption_cost: 4 (from consumption_project.json: production×vpc, production×mks, production×storage, infrastructure×vpc)
+	// prediction_days: 2 (primary=250, vpc=180; storage=null, vmware=null)
+	// consumption_cost: 4 (from consumption_project.json)
 	// resource_cost: 3 (from consumption_project_metric.json)
 	// resource_quantity: 3 (from consumption_project_metric.json)
 	// scrape_success: 1
 	// scrape_duration: 1
-	// Total: 22
-	expected := 22
+	// Total: 23
+	expected := 23
 	if len(metrics) != expected {
 		t.Errorf("expected %d metrics, got %d", expected, len(metrics))
 	}
@@ -165,11 +165,45 @@ func TestExporterPrediction(t *testing.T) {
 	expected := strings.NewReader(`
 		# HELP sc_prediction_days Estimated number of days until the balance is exhausted.
 		# TYPE sc_prediction_days gauge
-		sc_prediction_days 250
+		sc_prediction_days{billing_type="primary"} 250
+		sc_prediction_days{billing_type="vpc"} 180
 	`)
 
 	if err := testutil.CollectAndCompare(exp, expected, "sc_prediction_days"); err != nil {
 		t.Errorf("sc_prediction_days mismatch: %v", err)
+	}
+}
+
+func TestExporterPredictionAllNull(t *testing.T) {
+	// Server returns all-null predictions.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v3/balances":
+			w.Write([]byte(`{"data":{"billings":[{"billing_type":"primary","final_sum":100,"debt_sum":0,"balances":[{"balance_type":"main","value":100}],"debt":[]}]},"settings":{"currency":"rub","mode":"prepaid"}}`))
+		case "/v2/billing/prediction":
+			w.Write([]byte(`{"status":"success","data":{"primary":null,"storage":null,"vmware":null,"vpc":null}}`))
+		case "/v1/cloud_billing/statistic/consumption":
+			w.Write([]byte(`{"status":"success","data":[]}`))
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient("test-token", srv.URL)
+	exp := New(client)
+
+	// When all predictions are null, no sc_prediction_days metrics should be emitted.
+	ch := make(chan prometheus.Metric, 50)
+	exp.Collect(ch)
+	close(ch)
+
+	for m := range ch {
+		desc := m.Desc().String()
+		if strings.Contains(desc, "prediction_days") {
+			t.Error("expected no prediction_days metrics when all values are null")
+		}
 	}
 }
 
@@ -191,5 +225,133 @@ func TestExporterAPIFailure(t *testing.T) {
 
 	if err := testutil.CollectAndCompare(exp, expected, "sc_scrape_success"); err != nil {
 		t.Errorf("sc_scrape_success should be 0 on API failure: %v", err)
+	}
+}
+
+func TestExporterPartialAPIFailure(t *testing.T) {
+	// Server where balance works but prediction and consumption fail.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v3/balances":
+			data, _ := os.ReadFile("../testdata/balances.json")
+			w.Write(data)
+		default:
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient("test-token", srv.URL)
+	exp := New(client)
+
+	// scrape_success should be 0 because prediction and consumption failed.
+	expected := strings.NewReader(`
+		# HELP sc_scrape_success Whether the last scrape was successful (1 = success, 0 = failure).
+		# TYPE sc_scrape_success gauge
+		sc_scrape_success 0
+	`)
+
+	if err := testutil.CollectAndCompare(exp, expected, "sc_scrape_success"); err != nil {
+		t.Errorf("sc_scrape_success should be 0 on partial failure: %v", err)
+	}
+}
+
+func TestExporterEmptyBillings(t *testing.T) {
+	// Server returns empty billings array.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v3/balances":
+			w.Write([]byte(`{"data":{"billings":[]},"settings":{"currency":"rub","mode":"prepaid"}}`))
+		case "/v2/billing/prediction":
+			w.Write([]byte(`{"status":"success","data":{"primary":100}}`))
+		case "/v1/cloud_billing/statistic/consumption":
+			w.Write([]byte(`{"status":"success","data":[]}`))
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient("test-token", srv.URL)
+	exp := New(client)
+
+	// Empty billings triggers an error, so scrape_success = 0.
+	expected := strings.NewReader(`
+		# HELP sc_scrape_success Whether the last scrape was successful (1 = success, 0 = failure).
+		# TYPE sc_scrape_success gauge
+		sc_scrape_success 0
+	`)
+
+	if err := testutil.CollectAndCompare(exp, expected, "sc_scrape_success"); err != nil {
+		t.Errorf("sc_scrape_success should be 0 when billings is empty: %v", err)
+	}
+}
+
+func TestExporterEmptyConsumption(t *testing.T) {
+	// Server returns valid balance, prediction, but empty consumption.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v3/balances":
+			data, _ := os.ReadFile("../testdata/balances.json")
+			w.Write(data)
+		case "/v2/billing/prediction":
+			data, _ := os.ReadFile("../testdata/prediction.json")
+			w.Write(data)
+		case "/v1/cloud_billing/statistic/consumption":
+			w.Write([]byte(`{"status":"success","data":[]}`))
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient("test-token", srv.URL)
+	exp := New(client)
+
+	// scrape should succeed, just no consumption metrics.
+	expected := strings.NewReader(`
+		# HELP sc_scrape_success Whether the last scrape was successful (1 = success, 0 = failure).
+		# TYPE sc_scrape_success gauge
+		sc_scrape_success 1
+	`)
+
+	if err := testutil.CollectAndCompare(exp, expected, "sc_scrape_success"); err != nil {
+		t.Errorf("sc_scrape_success should be 1 with empty consumption: %v", err)
+	}
+}
+
+func TestExporterConsumptionNilProject(t *testing.T) {
+	// Server returns consumption items with nil project (should use "unknown").
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v3/balances":
+			data, _ := os.ReadFile("../testdata/balances.json")
+			w.Write(data)
+		case "/v2/billing/prediction":
+			data, _ := os.ReadFile("../testdata/prediction.json")
+			w.Write(data)
+		case "/v1/cloud_billing/statistic/consumption":
+			w.Write([]byte(`{"status":"success","data":[{"account_id":"1","provider_key":"vpc","value":100,"period":"2026-03","project":null}]}`))
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient("test-token", srv.URL)
+	exp := New(client)
+
+	expected := strings.NewReader(`
+		# HELP sc_consumption_cost Current month consumption cost by project and service in account currency.
+		# TYPE sc_consumption_cost gauge
+		sc_consumption_cost{project="unknown",service="vpc"} 100
+	`)
+
+	if err := testutil.CollectAndCompare(exp, expected, "sc_consumption_cost"); err != nil {
+		t.Errorf("consumption with nil project should use 'unknown': %v", err)
 	}
 }

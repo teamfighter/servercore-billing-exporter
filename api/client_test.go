@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const testToken = "test-token"
+
 // newTestServer creates an httptest.Server that serves JSON fixtures
 // based on the request URL path.
 func newTestServer(t *testing.T, routes map[string]string) *httptest.Server {
@@ -40,7 +42,7 @@ func TestFetchBalance(t *testing.T) {
 	})
 	defer srv.Close()
 
-	client := NewClient("test-token", srv.URL)
+	client := NewClient(testToken, srv.URL)
 	resp, err := client.FetchBalance()
 	if err != nil {
 		t.Fatalf("FetchBalance() error: %v", err)
@@ -75,14 +77,23 @@ func TestFetchPrediction(t *testing.T) {
 	})
 	defer srv.Close()
 
-	client := NewClient("test-token", srv.URL)
+	client := NewClient(testToken, srv.URL)
 	resp, err := client.FetchPrediction()
 	if err != nil {
 		t.Fatalf("FetchPrediction() error: %v", err)
 	}
 
-	if resp.Data.Primary != 250 {
-		t.Errorf("expected prediction 250, got %f", resp.Data.Primary)
+	if resp.Data.Primary == nil || *resp.Data.Primary != 250 {
+		t.Errorf("expected primary prediction 250, got %v", resp.Data.Primary)
+	}
+	if resp.Data.VPC == nil || *resp.Data.VPC != 180 {
+		t.Errorf("expected vpc prediction 180, got %v", resp.Data.VPC)
+	}
+	if resp.Data.Storage != nil {
+		t.Errorf("expected storage prediction nil, got %v", *resp.Data.Storage)
+	}
+	if resp.Data.Vmware != nil {
+		t.Errorf("expected vmware prediction nil, got %v", *resp.Data.Vmware)
 	}
 }
 
@@ -92,7 +103,7 @@ func TestFetchConsumption(t *testing.T) {
 	})
 	defer srv.Close()
 
-	client := NewClient("test-token", srv.URL)
+	client := NewClient(testToken, srv.URL)
 	resp, err := client.FetchConsumption("2026-03-01T00:00:00", "2026-03-18T00:00:00", "project")
 	if err != nil {
 		t.Fatalf("FetchConsumption() error: %v", err)
@@ -125,7 +136,7 @@ func TestFetchConsumptionWithMetrics(t *testing.T) {
 	})
 	defer srv.Close()
 
-	client := NewClient("test-token", srv.URL)
+	client := NewClient(testToken, srv.URL)
 	resp, err := client.FetchConsumption("2026-03-17T00:00:00", "2026-03-18T00:00:00", "project_metric")
 	if err != nil {
 		t.Fatalf("FetchConsumption() error: %v", err)
@@ -158,9 +169,20 @@ func TestClientUnauthorized(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient("bad-token", srv.URL)
+
 	_, err := client.FetchBalance()
 	if err == nil {
-		t.Fatal("expected error for unauthorized request")
+		t.Fatal("expected error for unauthorized FetchBalance")
+	}
+
+	_, err = client.FetchPrediction()
+	if err == nil {
+		t.Fatal("expected error for unauthorized FetchPrediction")
+	}
+
+	_, err = client.FetchConsumption("2026-03-01T00:00:00", "2026-03-18T00:00:00", "project")
+	if err == nil {
+		t.Fatal("expected error for unauthorized FetchConsumption")
 	}
 }
 
@@ -170,9 +192,89 @@ func TestClientNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient("test-token", srv.URL)
+	client := NewClient(testToken, srv.URL)
 	_, err := client.FetchBalance()
 	if err == nil {
 		t.Fatal("expected error for 404 response")
+	}
+}
+
+func TestClientServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := NewClient(testToken, srv.URL)
+
+	_, err := client.FetchBalance()
+	if err == nil {
+		t.Fatal("expected error for 500 response on FetchBalance")
+	}
+
+	_, err = client.FetchPrediction()
+	if err == nil {
+		t.Fatal("expected error for 500 response on FetchPrediction")
+	}
+}
+
+func TestClientConnectionRefused(t *testing.T) {
+	client := NewClient(testToken, "http://127.0.0.1:1")
+
+	_, err := client.FetchBalance()
+	if err == nil {
+		t.Fatal("expected error for connection refused")
+	}
+}
+
+func TestClientInvalidJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{invalid json`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(testToken, srv.URL)
+
+	_, err := client.FetchBalance()
+	if err == nil {
+		t.Fatal("expected error for invalid JSON on FetchBalance")
+	}
+
+	_, err = client.FetchPrediction()
+	if err == nil {
+		t.Fatal("expected error for invalid JSON on FetchPrediction")
+	}
+
+	_, err = client.FetchConsumption("2026-03-01T00:00:00", "2026-03-18T00:00:00", "project")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON on FetchConsumption")
+	}
+}
+
+func TestClientEmptyResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(testToken, srv.URL)
+
+	// Empty response should parse without error (zero-valued structs).
+	resp, err := client.FetchBalance()
+	if err != nil {
+		t.Fatalf("FetchBalance() unexpected error: %v", err)
+	}
+	if len(resp.Data.Billings) != 0 {
+		t.Errorf("expected 0 billings, got %d", len(resp.Data.Billings))
+	}
+
+	pred, err := client.FetchPrediction()
+	if err != nil {
+		t.Fatalf("FetchPrediction() unexpected error: %v", err)
+	}
+	if pred.Data.Primary != nil {
+		t.Errorf("expected nil primary prediction, got %v", *pred.Data.Primary)
 	}
 }

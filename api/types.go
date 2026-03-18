@@ -45,8 +45,12 @@ type PredictionResponse struct {
 }
 
 // PredictionData contains the prediction values per billing type.
+// Values are in days. A nil value means no prediction is available.
 type PredictionData struct {
-	Primary float64 `json:"primary"`
+	Primary *float64 `json:"primary"`
+	Storage *float64 `json:"storage"`
+	Vmware  *float64 `json:"vmware"`
+	VPC     *float64 `json:"vpc"`
 }
 
 // ConsumptionResponse represents the response from
