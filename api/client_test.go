@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -284,3 +285,31 @@ func TestClientEmptyResponse(t *testing.T) {
 		t.Errorf("expected nil primary prediction, got %v", *pred.Data.Primary)
 	}
 }
+
+func TestNewClientDefaultURL(t *testing.T) {
+	client := NewClient("my-token", "")
+	if client.baseURL != DefaultBaseURL {
+		t.Errorf("expected default base URL %q, got %q", DefaultBaseURL, client.baseURL)
+	}
+	if client.token != "my-token" {
+		t.Errorf("expected token 'my-token', got %q", client.token)
+	}
+}
+
+func TestNewClientCustomURL(t *testing.T) {
+	client := NewClient("tok", "https://custom.api.com/")
+	// Should trim trailing slash.
+	if client.baseURL != "https://custom.api.com" {
+		t.Errorf("expected trimmed URL, got %q", client.baseURL)
+	}
+}
+
+func TestBuildProviderKeysParam(t *testing.T) {
+	param := buildProviderKeysParam()
+	for _, key := range AllProviderKeys {
+		if !strings.Contains(param, "provider_keys="+key) {
+			t.Errorf("param should contain provider_keys=%s", key)
+		}
+	}
+}
+
