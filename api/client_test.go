@@ -7,7 +7,13 @@ import (
 	"testing"
 )
 
-const testToken = "test-token"
+const (
+	testToken       = "test-token"
+	headerJSON      = "application/json"
+	headerCType     = "Content-Type"
+	testStartDate   = "2026-03-01T00:00:00"
+	testEndDate     = "2026-03-18T00:00:00"
+)
 
 // newTestServer creates an httptest.Server that serves JSON fixtures
 // based on the request URL path.
@@ -31,7 +37,7 @@ func newTestServer(t *testing.T, routes map[string]string) *httptest.Server {
 			t.Fatalf("reading fixture %s: %v", fixture, err)
 		}
 
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerCType, headerJSON)
 		w.Write(data)
 	}))
 }
@@ -104,7 +110,7 @@ func TestFetchConsumption(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(testToken, srv.URL)
-	resp, err := client.FetchConsumption("2026-03-01T00:00:00", "2026-03-18T00:00:00", "project")
+	resp, err := client.FetchConsumption(testStartDate, testEndDate, "project")
 	if err != nil {
 		t.Fatalf("FetchConsumption() error: %v", err)
 	}
@@ -137,7 +143,7 @@ func TestFetchConsumptionWithMetrics(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(testToken, srv.URL)
-	resp, err := client.FetchConsumption("2026-03-17T00:00:00", "2026-03-18T00:00:00", "project_metric")
+	resp, err := client.FetchConsumption("2026-03-17T00:00:00", testEndDate, "project_metric")
 	if err != nil {
 		t.Fatalf("FetchConsumption() error: %v", err)
 	}
@@ -180,7 +186,7 @@ func TestClientUnauthorized(t *testing.T) {
 		t.Fatal("expected error for unauthorized FetchPrediction")
 	}
 
-	_, err = client.FetchConsumption("2026-03-01T00:00:00", "2026-03-18T00:00:00", "project")
+	_, err = client.FetchConsumption(testStartDate, testEndDate, "project")
 	if err == nil {
 		t.Fatal("expected error for unauthorized FetchConsumption")
 	}
@@ -229,7 +235,7 @@ func TestClientConnectionRefused(t *testing.T) {
 
 func TestClientInvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerCType, headerJSON)
 		w.Write([]byte(`{invalid json`))
 	}))
 	defer srv.Close()
@@ -246,7 +252,7 @@ func TestClientInvalidJSON(t *testing.T) {
 		t.Fatal("expected error for invalid JSON on FetchPrediction")
 	}
 
-	_, err = client.FetchConsumption("2026-03-01T00:00:00", "2026-03-18T00:00:00", "project")
+	_, err = client.FetchConsumption(testStartDate, testEndDate, "project")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON on FetchConsumption")
 	}
@@ -254,7 +260,7 @@ func TestClientInvalidJSON(t *testing.T) {
 
 func TestClientEmptyResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerCType, headerJSON)
 		w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()

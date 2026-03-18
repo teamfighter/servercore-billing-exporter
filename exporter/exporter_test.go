@@ -13,30 +13,44 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
+const (
+	testToken              = "test-token"
+	headerCType            = "Content-Type"
+	headerJSON             = "application/json"
+	pathBalances           = "/v3/balances"
+	pathPrediction         = "/v2/billing/prediction"
+	pathConsumption        = "/v1/cloud_billing/statistic/consumption"
+	fixtureBalances        = "../testdata/balances.json"
+	fixturePrediction      = "../testdata/prediction.json"
+	fixtureConsProject     = "../testdata/consumption_project.json"
+	fixtureConsProjMetric  = "../testdata/consumption_project_metric.json"
+	errNotFound            = "not found"
+)
+
 // testAPIServer creates a mock API server that serves fixtures for all endpoints.
 func testAPIServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerCType, headerJSON)
 
 		var fixture string
 		switch r.URL.Path {
-		case "/v3/balances":
-			fixture = "../testdata/balances.json"
-		case "/v2/billing/prediction":
-			fixture = "../testdata/prediction.json"
-		case "/v1/cloud_billing/statistic/consumption":
+		case pathBalances:
+			fixture = fixtureBalances
+		case pathPrediction:
+			fixture = fixturePrediction
+		case pathConsumption:
 			groupType := r.URL.Query().Get("group_type")
 			switch groupType {
 			case "project":
-				fixture = "../testdata/consumption_project.json"
+				fixture = fixtureConsProject
 			case "project_metric":
-				fixture = "../testdata/consumption_project_metric.json"
+				fixture = fixtureConsProjMetric
 			default:
-				fixture = "../testdata/consumption_project.json"
+				fixture = fixtureConsProject
 			}
 		default:
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			http.Error(w, `{"error":"`+errNotFound+`"}`, http.StatusNotFound)
 			return
 		}
 
@@ -71,7 +85,7 @@ func TestExporterCollect(t *testing.T) {
 	srv := testAPIServer(t)
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	// Collect all metrics.
@@ -106,7 +120,7 @@ func TestExporterScrapeSuccess(t *testing.T) {
 	srv := testAPIServer(t)
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	// Register and check that scrape_success = 1.
@@ -141,7 +155,7 @@ func TestExporterBalanceTotal(t *testing.T) {
 	srv := testAPIServer(t)
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	expected := strings.NewReader(`
@@ -159,7 +173,7 @@ func TestExporterPrediction(t *testing.T) {
 	srv := testAPIServer(t)
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	expected := strings.NewReader(`
@@ -177,21 +191,21 @@ func TestExporterPrediction(t *testing.T) {
 func TestExporterPredictionAllNull(t *testing.T) {
 	// Server returns all-null predictions.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerCType, headerJSON)
 		switch r.URL.Path {
-		case "/v3/balances":
+		case pathBalances:
 			w.Write([]byte(`{"data":{"billings":[{"billing_type":"primary","final_sum":100,"debt_sum":0,"balances":[{"balance_type":"main","value":100}],"debt":[]}]},"settings":{"currency":"rub","mode":"prepaid"}}`))
-		case "/v2/billing/prediction":
+		case pathPrediction:
 			w.Write([]byte(`{"status":"success","data":{"primary":null,"storage":null,"vmware":null,"vpc":null}}`))
-		case "/v1/cloud_billing/statistic/consumption":
+		case pathConsumption:
 			w.Write([]byte(`{"status":"success","data":[]}`))
 		default:
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, errNotFound, http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	// When all predictions are null, no sc_prediction_days metrics should be emitted.
@@ -214,7 +228,7 @@ func TestExporterAPIFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	expected := strings.NewReader(`
@@ -231,10 +245,10 @@ func TestExporterAPIFailure(t *testing.T) {
 func TestExporterPartialAPIFailure(t *testing.T) {
 	// Server where balance works but prediction and consumption fail.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerCType, headerJSON)
 		switch r.URL.Path {
-		case "/v3/balances":
-			data, _ := os.ReadFile("../testdata/balances.json")
+		case pathBalances:
+			data, _ := os.ReadFile(fixtureBalances)
 			w.Write(data)
 		default:
 			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
@@ -242,7 +256,7 @@ func TestExporterPartialAPIFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	// scrape_success should be 0 because prediction and consumption failed.
@@ -260,21 +274,21 @@ func TestExporterPartialAPIFailure(t *testing.T) {
 func TestExporterEmptyBillings(t *testing.T) {
 	// Server returns empty billings array.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerCType, headerJSON)
 		switch r.URL.Path {
-		case "/v3/balances":
+		case pathBalances:
 			w.Write([]byte(`{"data":{"billings":[]},"settings":{"currency":"rub","mode":"prepaid"}}`))
-		case "/v2/billing/prediction":
+		case pathPrediction:
 			w.Write([]byte(`{"status":"success","data":{"primary":100}}`))
-		case "/v1/cloud_billing/statistic/consumption":
+		case pathConsumption:
 			w.Write([]byte(`{"status":"success","data":[]}`))
 		default:
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, errNotFound, http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	// Empty billings triggers an error, so scrape_success = 0.
@@ -292,23 +306,23 @@ func TestExporterEmptyBillings(t *testing.T) {
 func TestExporterEmptyConsumption(t *testing.T) {
 	// Server returns valid balance, prediction, but empty consumption.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerCType, headerJSON)
 		switch r.URL.Path {
-		case "/v3/balances":
-			data, _ := os.ReadFile("../testdata/balances.json")
+		case pathBalances:
+			data, _ := os.ReadFile(fixtureBalances)
 			w.Write(data)
-		case "/v2/billing/prediction":
-			data, _ := os.ReadFile("../testdata/prediction.json")
+		case pathPrediction:
+			data, _ := os.ReadFile(fixturePrediction)
 			w.Write(data)
-		case "/v1/cloud_billing/statistic/consumption":
+		case pathConsumption:
 			w.Write([]byte(`{"status":"success","data":[]}`))
 		default:
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, errNotFound, http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	// scrape should succeed, just no consumption metrics.
@@ -326,23 +340,23 @@ func TestExporterEmptyConsumption(t *testing.T) {
 func TestExporterConsumptionNilProject(t *testing.T) {
 	// Server returns consumption items with nil project (should use "unknown").
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerCType, headerJSON)
 		switch r.URL.Path {
-		case "/v3/balances":
-			data, _ := os.ReadFile("../testdata/balances.json")
+		case pathBalances:
+			data, _ := os.ReadFile(fixtureBalances)
 			w.Write(data)
-		case "/v2/billing/prediction":
-			data, _ := os.ReadFile("../testdata/prediction.json")
+		case pathPrediction:
+			data, _ := os.ReadFile(fixturePrediction)
 			w.Write(data)
-		case "/v1/cloud_billing/statistic/consumption":
+		case pathConsumption:
 			w.Write([]byte(`{"status":"success","data":[{"account_id":"1","provider_key":"vpc","value":100,"period":"2026-03","project":null}]}`))
 		default:
-			http.Error(w, "not found", http.StatusNotFound)
+			http.Error(w, errNotFound, http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
 
-	client := api.NewClient("test-token", srv.URL)
+	client := api.NewClient(testToken, srv.URL)
 	exp := New(client)
 
 	expected := strings.NewReader(`

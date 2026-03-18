@@ -41,3 +41,57 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-release-notes:
+    name: Update Release Notes
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Determine version
+        id: version
+        run: |
+          RAW_TAG="${GITHUB_REF#refs/tags/}"
+          CLEAN_TAG="${RAW_TAG#v}"
+          echo "raw_tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "clean_tag=$CLEAN_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Extract changelog for version
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.raw_tag }}"
+          # Extract the changelog section for this version
+          CHANGELOG=$(sed -n "/## \[${VERSION#v}\]/,/## \[/p" CHANGELOG.md | sed '$d')
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="Release $VERSION"
+          fi
+          {
+            echo 'notes<<EOF'
+            echo "$CHANGELOG"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update release notes
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.raw_tag }}
+          body: |
+            ${{ steps.changelog.outputs.notes }}
+
+            ## 🐳 Docker Image
+
+            ```bash
+            docker pull ghcr.io/${{ github.repository_owner }}/servercore-billing-exporter:${{ steps.version.outputs.clean_tag }}
+            ```
+
+            ## 🚀 Quick Start
+
+            ```bash
+            docker run -d \
+              -p 9876:9876 \
+              -e TOKEN=your_servercore_api_token \
+              ghcr.io/${{ github.repository_owner }}/servercore-billing-exporter:${{ steps.version.outputs.clean_tag }}
+            ```
+
+            See [README](https://github.com/${{ github.repository }}/blob/${{ steps.version.outputs.raw_tag }}/README.md) for full documentation.
