@@ -16,7 +16,7 @@ dockers:
   - image_templates:
       - "ghcr.io/teamfighter/servercore-billing-exporter:{{ .Tag }}"
       - "ghcr.io/teamfighter/servercore-billing-exporter:latest"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
 
 archives:
   - format: tar.gz
