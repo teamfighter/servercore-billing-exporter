@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -159,5 +160,45 @@ func TestNewServer(t *testing.T) {
 	}
 	if srv.Handler == nil {
 		t.Errorf("expected non-nil Handler")
+	}
+}
+
+func TestMainFunc(t *testing.T) {
+	// Set required env vars
+	originalToken := os.Getenv("TOKEN")
+	originalListenAddr := os.Getenv("LISTEN_ADDR")
+	defer func() {
+		os.Setenv("TOKEN", originalToken)
+		os.Setenv("LISTEN_ADDR", originalListenAddr)
+	}()
+
+	os.Setenv("TOKEN", "dummy-test-token")
+	os.Setenv("LISTEN_ADDR", "localhost:0")
+
+	// Run main in a goroutine
+	done := make(chan struct{})
+	go func() {
+		main()
+		close(done)
+	}()
+
+	// Give it a moment to start up and set up the signal listener
+	time.Sleep(200 * time.Millisecond)
+
+	// Send an interrupt signal to ourselves
+	p, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for main to finish gracefully
+	select {
+	case <-done:
+		// test passed
+	case <-time.After(3 * time.Second):
+		t.Fatal("main did not shut down gracefully in time")
 	}
 }
