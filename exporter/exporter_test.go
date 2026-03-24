@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/teamfighter/servercore-billing-exporter/api"
+	"github.com/teamfighter/servercore-billing-exporter/openstack"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -64,7 +66,7 @@ func testAPIServer(t *testing.T) *httptest.Server {
 
 func TestExporterDescribe(t *testing.T) {
 	client := api.NewClient("test", "http://localhost")
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	ch := make(chan *prometheus.Desc, 20)
 	exp.Describe(ch)
@@ -75,9 +77,9 @@ func TestExporterDescribe(t *testing.T) {
 		descs = append(descs, d)
 	}
 
-	// We expect exactly 10 metric descriptors.
-	if len(descs) != 10 {
-		t.Errorf("expected 10 descriptors, got %d", len(descs))
+	// We expect exactly 12 metric descriptors.
+	if len(descs) != 12 {
+		t.Errorf("expected 12 descriptors, got %d", len(descs))
 	}
 }
 
@@ -86,7 +88,7 @@ func TestExporterCollect(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	// Collect all metrics.
 	ch := make(chan prometheus.Metric, 50)
@@ -121,7 +123,7 @@ func TestExporterScrapeSuccess(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	// Register and check that scrape_success = 1.
 	registry := prometheus.NewPedanticRegistry()
@@ -156,7 +158,7 @@ func TestExporterBalanceTotal(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	expected := strings.NewReader(`
 		# HELP sc_balance_total Total account balance in account currency.
@@ -174,7 +176,7 @@ func TestExporterPrediction(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	expected := strings.NewReader(`
 		# HELP sc_prediction_days Estimated number of days until the balance is exhausted.
@@ -206,7 +208,7 @@ func TestExporterPredictionAllNull(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	// When all predictions are null, no sc_prediction_days metrics should be emitted.
 	ch := make(chan prometheus.Metric, 50)
@@ -229,7 +231,7 @@ func TestExporterAPIFailure(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	expected := strings.NewReader(`
 		# HELP sc_scrape_success Whether the last scrape was successful (1 = success, 0 = failure).
@@ -257,7 +259,7 @@ func TestExporterPartialAPIFailure(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	// scrape_success should be 0 because prediction and consumption failed.
 	expected := strings.NewReader(`
@@ -289,7 +291,7 @@ func TestExporterEmptyBillings(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	// Empty billings triggers an error, so scrape_success = 0.
 	expected := strings.NewReader(`
@@ -323,7 +325,7 @@ func TestExporterEmptyConsumption(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	// scrape should succeed, just no consumption metrics.
 	expected := strings.NewReader(`
@@ -357,7 +359,7 @@ func TestExporterConsumptionNilProject(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	expected := strings.NewReader(`
 		# HELP sc_consumption_cost Current month consumption cost by project and service in account currency.
@@ -423,7 +425,7 @@ func TestExporterConsumptionProjectMetricFailure(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	// Since consumption/project_metric failed, scrape_success should be 0.
 	expected := strings.NewReader(`
@@ -459,7 +461,7 @@ func TestExporterConsumptionNilMetric(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
 
 	// It should succeed, but metric should be skipped -> no resourceCost emitted
 	ch := make(chan prometheus.Metric, 50)
@@ -472,3 +474,346 @@ func TestExporterConsumptionNilMetric(t *testing.T) {
 		}
 	}
 }
+
+// --- Mock TagFetcher for testing ---
+
+type mockTagFetcher struct {
+	tags map[string]openstack.ServerTags
+	err  error
+}
+
+func (m *mockTagFetcher) FetchAllTags() (map[string]openstack.ServerTags, error) {
+	return m.tags, m.err
+}
+
+func TestExporterVMCostWithTags(t *testing.T) {
+	// Server returns object_metric data with cloud_vm objects matching mock tags.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerCType, headerJSON)
+		switch r.URL.Path {
+		case pathBalances:
+			w.Write([]byte(`{"data":{"billings":[{"final_sum":100,"debt_sum":0,"balances":[],"debt":[]}]},"settings":{"currency":"rub"}}`))
+		case pathPrediction:
+			w.Write([]byte(`{"status":"success","data":{"primary":100}}`))
+		case pathConsumption:
+			gt := r.URL.Query().Get("group_type")
+			if gt == "object_metric" {
+				w.Write([]byte(`{"status":"success","data":[{"account_id":"1","provider_key":"vpc","value":5000,"period":"2026-03","project":{"id":"p1","name":"prod"},"metric":{"id":"compute_cores","name":"vCPU","quantity":4,"unit":"item"},"object":{"id":"server-aaa","name":"web1","type":"cloud_vm"}}]}`))
+				return
+			}
+			w.Write([]byte(`{"status":"success","data":[]}`))
+		default:
+			http.Error(w, errNotFound, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	fetcher := &mockTagFetcher{
+		tags: map[string]openstack.ServerTags{
+			"server-aaa": {"tag2": "owner@example.com", "tag3": "lead@example.com", "tag1": "Platform"},
+		},
+	}
+	exp := New(client, fetcher, []string{"tag1", "tag2", "tag3"}, nil)
+
+	expected := strings.NewReader(`
+		# HELP sc_vm_cost Per-VM resource cost with OpenStack tags.
+		# TYPE sc_vm_cost gauge
+		sc_vm_cost{metric="compute_cores",project="prod",service="Cloud Compute",tag1="Platform",tag2="owner@example.com",tag3="lead@example.com",vm_name="web1"} 50
+	`)
+
+	if err := testutil.CollectAndCompare(exp, expected, "sc_vm_cost"); err != nil {
+		t.Errorf("vm_cost with tags mismatch: %v", err)
+	}
+}
+
+func TestExporterVMCostNoMatch(t *testing.T) {
+	// Server returns cloud_vm object with ID that does NOT match any tag.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerCType, headerJSON)
+		switch r.URL.Path {
+		case pathBalances:
+			w.Write([]byte(`{"data":{"billings":[{"final_sum":100,"debt_sum":0,"balances":[],"debt":[]}]},"settings":{"currency":"rub"}}`))
+		case pathPrediction:
+			w.Write([]byte(`{"status":"success","data":{"primary":100}}`))
+		case pathConsumption:
+			gt := r.URL.Query().Get("group_type")
+			if gt == "object_metric" {
+				w.Write([]byte(`{"status":"success","data":[{"account_id":"1","provider_key":"vpc","value":1000,"period":"2026-03","project":{"id":"p1","name":"prod"},"metric":{"id":"compute_ram","name":"RAM","quantity":8,"unit":"GB"},"object":{"id":"server-unknown","name":"mystery","type":"cloud_vm"}}]}`))
+				return
+			}
+			w.Write([]byte(`{"status":"success","data":[]}`))
+		default:
+			http.Error(w, errNotFound, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	fetcher := &mockTagFetcher{
+		tags: map[string]openstack.ServerTags{
+			"server-aaa": {"tag2": "owner@example.com", "tag3": "lead@example.com", "tag1": "Platform"},
+		},
+	}
+	exp := New(client, fetcher, []string{"tag1", "tag2", "tag3"}, nil)
+
+	// Tags should be empty because server-unknown is not in the tags map.
+	expected := strings.NewReader(`
+		# HELP sc_vm_cost Per-VM resource cost with OpenStack tags.
+		# TYPE sc_vm_cost gauge
+		sc_vm_cost{metric="compute_ram",project="prod",service="Cloud Compute",tag1="Untagged",tag2="Untagged",tag3="Untagged",vm_name="mystery"} 10
+	`)
+
+	if err := testutil.CollectAndCompare(exp, expected, "sc_vm_cost"); err != nil {
+		t.Errorf("vm_cost with unmatched tags mismatch: %v", err)
+	}
+}
+
+func TestExporterTagFetcherError(t *testing.T) {
+	// TagFetcher returns an error — scrape should still succeed.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerCType, headerJSON)
+		switch r.URL.Path {
+		case pathBalances:
+			w.Write([]byte(`{"data":{"billings":[{"final_sum":100,"debt_sum":0,"balances":[],"debt":[]}]},"settings":{"currency":"rub"}}`))
+		case pathPrediction:
+			w.Write([]byte(`{"status":"success","data":{"primary":100}}`))
+		case pathConsumption:
+			w.Write([]byte(`{"status":"success","data":[]}`))
+		default:
+			http.Error(w, errNotFound, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	fetcher := &mockTagFetcher{err: fmt.Errorf("keystone unreachable")}
+	exp := New(client, fetcher, []string{"tag1", "tag2", "tag3"}, nil)
+
+	// scrape_success should be 1 despite tag fetcher error.
+	expected := strings.NewReader(`
+		# HELP sc_scrape_success Whether the last scrape was successful (1 = success, 0 = failure).
+		# TYPE sc_scrape_success gauge
+		sc_scrape_success 1
+	`)
+
+	if err := testutil.CollectAndCompare(exp, expected, "sc_scrape_success"); err != nil {
+		t.Errorf("scrape should succeed even when tag fetcher fails: %v", err)
+	}
+}
+func TestExtractParentVMName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"disk-for-myvm-1-#1", "myvm-1"},
+		{"disk-for-hello-#99", "hello"},
+		{"nodisk", "nodisk"},
+		{"disk-for--#", ""},
+	}
+	for _, tc := range tests {
+		if got := extractParentVMName(tc.in); got != tc.want {
+			t.Errorf("extractParentVMName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestProcessDiskItem(t *testing.T) {
+	exp := New(nil, nil, []string{"tag1", "tag2"}, nil)
+	diskAgg := make(map[diskKey]float64)
+
+	item := api.ConsumptionItem{
+		ProviderKey: "vpc",
+		Metric:      &api.ConsumptionMetric{ID: "volume_standard"},
+		Object: &api.ConsumptionObject{
+			Type:       "volume_fast",
+			ID:         "disk-123",
+			Name:       "my-disk",
+			ParentName: "disk-for-myvm-#1",
+		},
+		Value: 500, // 5 units
+	}
+
+	globalTags := map[string]openstack.ServerTags{
+		"myvm": {"tag1": "backend", "tag2": "owner@"},
+	}
+
+	exp.processDiskItem(item, "my-proj", globalTags, diskAgg)
+
+	if len(diskAgg) != 1 {
+		t.Fatalf("expected 1 aggregated disk, got %d", len(diskAgg))
+	}
+
+	for key, val := range diskAgg {
+		if key.diskName != "my-disk" || key.parentVM != "disk-for-myvm-#1" {
+			t.Errorf("unexpected key: %+v", key)
+		}
+		if key.tagsHash != "backend\x00owner@" {
+			t.Errorf("unexpected tagsHash: %q", key.tagsHash)
+		}
+		if val != 5.0 {
+			t.Errorf("expected value 5.0, got %v", val)
+		}
+	}
+}
+
+func TestApplyPrefixOverrides(t *testing.T) {
+	t.Run("prefix match applies override", func(t *testing.T) {
+		overrides := TagOverrides{
+			"k8s-prod-node": {"team": "Platform", "bo": "ops@example.com"},
+		}
+		exp := New(nil, nil, []string{"team", "bo"}, overrides)
+		tagValues := []string{"Untagged", "Untagged"}
+
+		exp.applyPrefixOverrides("k8s-prod-node-abc123", tagValues)
+
+		if tagValues[0] != "Platform" {
+			t.Errorf("expected team=Platform, got %q", tagValues[0])
+		}
+		if tagValues[1] != "ops@example.com" {
+			t.Errorf("expected bo=ops@example.com, got %q", tagValues[1])
+		}
+	})
+
+	t.Run("no prefix match leaves Untagged", func(t *testing.T) {
+		overrides := TagOverrides{
+			"k8s-prod": {"team": "Platform"},
+		}
+		exp := New(nil, nil, []string{"team"}, overrides)
+		tagValues := []string{"Untagged"}
+
+		exp.applyPrefixOverrides("web-server-01", tagValues)
+
+		if tagValues[0] != "Untagged" {
+			t.Errorf("expected Untagged, got %q", tagValues[0])
+		}
+	})
+
+	t.Run("empty overrides is no-op", func(t *testing.T) {
+		exp := New(nil, nil, []string{"team"}, nil)
+		tagValues := []string{"Untagged"}
+
+		exp.applyPrefixOverrides("anything", tagValues)
+
+		if tagValues[0] != "Untagged" {
+			t.Errorf("expected Untagged, got %q", tagValues[0])
+		}
+	})
+
+	t.Run("override does not overwrite existing tags", func(t *testing.T) {
+		overrides := TagOverrides{
+			"k8s-prod": {"team": "Platform", "bo": "override@example.com"},
+		}
+		exp := New(nil, nil, []string{"team", "bo"}, overrides)
+		tagValues := []string{"ExistingTeam", "Untagged"}
+
+		exp.applyPrefixOverrides("k8s-prod-node-01", tagValues)
+
+		if tagValues[0] != "ExistingTeam" {
+			t.Errorf("expected ExistingTeam to be preserved, got %q", tagValues[0])
+		}
+		if tagValues[1] != "override@example.com" {
+			t.Errorf("expected override for bo, got %q", tagValues[1])
+		}
+	})
+
+	t.Run("override key not in exportedTags is ignored", func(t *testing.T) {
+		overrides := TagOverrides{
+			"web-": {"team": "Backend", "nonexistent": "ignored"},
+		}
+		exp := New(nil, nil, []string{"team"}, overrides)
+		tagValues := []string{"Untagged"}
+
+		exp.applyPrefixOverrides("web-server-01", tagValues)
+
+		if tagValues[0] != "Backend" {
+			t.Errorf("expected Backend, got %q", tagValues[0])
+		}
+	})
+
+	t.Run("exact VM name matches prefix", func(t *testing.T) {
+		overrides := TagOverrides{
+			"exact-name": {"team": "Exact"},
+		}
+		exp := New(nil, nil, []string{"team"}, overrides)
+		tagValues := []string{"Untagged"}
+
+		exp.applyPrefixOverrides("exact-name", tagValues)
+
+		if tagValues[0] != "Exact" {
+			t.Errorf("expected Exact, got %q", tagValues[0])
+		}
+	})
+}
+
+func TestLoadTagOverrides(t *testing.T) {
+	t.Run("empty path returns nil", func(t *testing.T) {
+		overrides, err := LoadTagOverrides("")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if overrides != nil {
+			t.Errorf("expected nil overrides for empty path, got %v", overrides)
+		}
+	})
+
+	t.Run("valid JSON file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := dir + "/overrides.json"
+		content := `{
+			"k8s-prod-node": {"team": "Platform"},
+			"web-": {"team": "Backend", "bo": "web-owner@example.com"}
+		}`
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write test file: %v", err)
+		}
+
+		overrides, err := LoadTagOverrides(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if overrides["k8s-prod-node"]["team"] != "Platform" {
+			t.Errorf("expected team=Platform, got %q", overrides["k8s-prod-node"]["team"])
+		}
+		if overrides["web-"]["bo"] != "web-owner@example.com" {
+			t.Errorf("expected bo=web-owner@example.com, got %q", overrides["web-"]["bo"])
+		}
+	})
+
+	t.Run("missing file returns error", func(t *testing.T) {
+		_, err := LoadTagOverrides("/nonexistent/path/overrides.json")
+		if err == nil {
+			t.Fatal("expected error for missing file, got nil")
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		dir := t.TempDir()
+		path := dir + "/bad.json"
+		if err := os.WriteFile(path, []byte(`{not valid json}`), 0644); err != nil {
+			t.Fatalf("failed to write test file: %v", err)
+		}
+
+		_, err := LoadTagOverrides(path)
+		if err == nil {
+			t.Fatal("expected error for invalid JSON, got nil")
+		}
+	})
+
+	t.Run("empty JSON object is valid", func(t *testing.T) {
+		dir := t.TempDir()
+		path := dir + "/empty.json"
+		if err := os.WriteFile(path, []byte(`{}`), 0644); err != nil {
+			t.Fatalf("failed to write test file: %v", err)
+		}
+
+		overrides, err := LoadTagOverrides(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(overrides) != 0 {
+			t.Errorf("expected empty overrides, got %d entries", len(overrides))
+		}
+	})
+}
+
