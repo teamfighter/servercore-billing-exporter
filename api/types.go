@@ -89,6 +89,8 @@ type ConsumptionMetric struct {
 
 // ConsumptionObject identifies a specific billing object.
 type ConsumptionObject struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	ParentName string `json:"parent_name"`
 }

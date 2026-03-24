@@ -6,6 +6,7 @@
 // Configuration via environment variables:
 //   - TOKEN: Servercore API static token (required)
 //   - LISTEN_ADDR: HTTP listen address (default ":9876")
+//   - OPENSTACK_CONFIG: path to config.ini to enable VM tag enrichment (optional)
 package main
 
 import (
@@ -15,10 +16,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/teamfighter/servercore-billing-exporter/api"
 	"github.com/teamfighter/servercore-billing-exporter/exporter"
+	"github.com/teamfighter/servercore-billing-exporter/openstack"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -26,8 +29,11 @@ import (
 
 // config holds application configuration parsed from environment variables.
 type config struct {
-	Token      string
-	ListenAddr string
+	Token            string
+	ListenAddr       string
+	OpenStackConf    string
+	ExportedTags     []string
+	TagOverridesFile string
 }
 
 // parseConfig reads configuration from environment variables.
@@ -43,9 +49,22 @@ func parseConfig() (*config, error) {
 		listenAddr = ":9876"
 	}
 
+	var exportedTags []string
+	if tagsEnv := os.Getenv("EXPORTED_TAGS"); tagsEnv != "" {
+		for _, t := range strings.Split(tagsEnv, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				exportedTags = append(exportedTags, t)
+			}
+		}
+	}
+
 	return &config{
-		Token:      token,
-		ListenAddr: listenAddr,
+		Token:            token,
+		ListenAddr:       listenAddr,
+		OpenStackConf:    os.Getenv("OPENSTACK_CONFIG"),
+		ExportedTags:     exportedTags,
+		TagOverridesFile: os.Getenv("TAG_OVERRIDES_FILE"),
 	}, nil
 }
 
@@ -96,7 +115,28 @@ func main() {
 	}
 
 	client := api.NewClient(cfg.Token, "")
-	exp := exporter.New(client)
+
+	var tagFetcher openstack.TagFetcher
+	if cfg.OpenStackConf != "" {
+		osConfs, err := openstack.LoadConfig(cfg.OpenStackConf)
+		if err != nil {
+			log.Fatalf("Failed to load openstack config: %v", err)
+		}
+		tagFetcher = &openstack.LiveFetcher{Configs: osConfs}
+		log.Printf("Loaded %d OpenStack environments for tag enrichment", len(osConfs))
+	} else {
+		log.Printf("OPENSTACK_CONFIG not set, tag enrichment disabled")
+	}
+
+	tagOverrides, err := exporter.LoadTagOverrides(cfg.TagOverridesFile)
+	if err != nil {
+		log.Fatalf("Failed to load tag overrides: %v", err)
+	}
+	if tagOverrides != nil {
+		log.Printf("Loaded %d prefix tag overrides", len(tagOverrides))
+	}
+
+	exp := exporter.New(client, tagFetcher, cfg.ExportedTags, tagOverrides)
 
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(exp)

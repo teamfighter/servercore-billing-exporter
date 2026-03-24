@@ -1,8 +1,13 @@
 module github.com/teamfighter/servercore-billing-exporter
 
-go 1.22
+go 1.25.0
 
-require github.com/prometheus/client_golang v1.20.5
+require (
+	github.com/gophercloud/gophercloud v1.14.1
+	github.com/prometheus/client_golang v1.20.5
+	golang.org/x/sync v0.20.0
+	gopkg.in/ini.v1 v1.67.1
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

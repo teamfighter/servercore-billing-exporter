@@ -15,18 +15,30 @@ func TestParseConfig(t *testing.T) {
 	// Save original environment and restore after test
 	originalToken := os.Getenv("TOKEN")
 	originalListenAddr := os.Getenv("LISTEN_ADDR")
+	originalExportedTags := os.Getenv("EXPORTED_TAGS")
+	originalOSConfig := os.Getenv("OPENSTACK_CONFIG")
+	originalOverrides := os.Getenv("TAG_OVERRIDES_FILE")
 	defer func() {
 		os.Setenv("TOKEN", originalToken)
 		os.Setenv("LISTEN_ADDR", originalListenAddr)
+		os.Setenv("EXPORTED_TAGS", originalExportedTags)
+		os.Setenv("OPENSTACK_CONFIG", originalOSConfig)
+		os.Setenv("TAG_OVERRIDES_FILE", originalOverrides)
 	}()
 
 	tests := []struct {
-		name       string
-		envToken   string
-		envListen  string
-		wantToken  string
-		wantListen string
-		wantErr    bool
+		name             string
+		envToken         string
+		envListen        string
+		envExportedTags  string
+		envOSConfig      string
+		envOverrides     string
+		wantToken        string
+		wantListen       string
+		wantExportedTags []string
+		wantOSConfig     string
+		wantOverrides    string
+		wantErr          bool
 	}{
 		{
 			name:       "Missing TOKEN",
@@ -50,12 +62,63 @@ func TestParseConfig(t *testing.T) {
 			wantListen: ":8080",
 			wantErr:    false,
 		},
+		{
+			name:             "EXPORTED_TAGS parsed correctly",
+			envToken:         "test-token",
+			envExportedTags:  "env,owner,cost_center",
+			wantToken:        "test-token",
+			wantListen:       ":9876",
+			wantExportedTags: []string{"env", "owner", "cost_center"},
+		},
+		{
+			name:             "EXPORTED_TAGS with spaces trimmed",
+			envToken:         "test-token",
+			envExportedTags:  " team , bo , to ",
+			wantToken:        "test-token",
+			wantListen:       ":9876",
+			wantExportedTags: []string{"team", "bo", "to"},
+		},
+		{
+			name:             "EXPORTED_TAGS with empty items filtered",
+			envToken:         "test-token",
+			envExportedTags:  "team,,bo,,,to,",
+			wantToken:        "test-token",
+			wantListen:       ":9876",
+			wantExportedTags: []string{"team", "bo", "to"},
+		},
+		{
+			name:             "EXPORTED_TAGS empty string gives nil",
+			envToken:         "test-token",
+			envExportedTags:  "",
+			wantToken:        "test-token",
+			wantListen:       ":9876",
+			wantExportedTags: nil,
+		},
+		{
+			name:         "OPENSTACK_CONFIG is passed through",
+			envToken:     "test-token",
+			envOSConfig:  "/etc/exporter/config.ini",
+			wantToken:    "test-token",
+			wantListen:   ":9876",
+			wantOSConfig: "/etc/exporter/config.ini",
+		},
+		{
+			name:          "TAG_OVERRIDES_FILE is passed through",
+			envToken:      "test-token",
+			envOverrides:  "/etc/exporter/overrides.json",
+			wantToken:     "test-token",
+			wantListen:    ":9876",
+			wantOverrides: "/etc/exporter/overrides.json",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			os.Setenv("TOKEN", tc.envToken)
 			os.Setenv("LISTEN_ADDR", tc.envListen)
+			os.Setenv("EXPORTED_TAGS", tc.envExportedTags)
+			os.Setenv("OPENSTACK_CONFIG", tc.envOSConfig)
+			os.Setenv("TAG_OVERRIDES_FILE", tc.envOverrides)
 
 			cfg, err := parseConfig()
 			if tc.wantErr {
@@ -73,6 +136,26 @@ func TestParseConfig(t *testing.T) {
 			}
 			if cfg.ListenAddr != tc.wantListen {
 				t.Errorf("expected ListenAddr %q, got %q", tc.wantListen, cfg.ListenAddr)
+			}
+			if tc.wantExportedTags == nil {
+				if cfg.ExportedTags != nil {
+					t.Errorf("expected nil ExportedTags, got %v", cfg.ExportedTags)
+				}
+			} else {
+				if len(cfg.ExportedTags) != len(tc.wantExportedTags) {
+					t.Fatalf("expected %d exported tags, got %d: %v", len(tc.wantExportedTags), len(cfg.ExportedTags), cfg.ExportedTags)
+				}
+				for i, want := range tc.wantExportedTags {
+					if cfg.ExportedTags[i] != want {
+						t.Errorf("ExportedTags[%d] = %q, want %q", i, cfg.ExportedTags[i], want)
+					}
+				}
+			}
+			if cfg.OpenStackConf != tc.wantOSConfig {
+				t.Errorf("expected OpenStackConf %q, got %q", tc.wantOSConfig, cfg.OpenStackConf)
+			}
+			if cfg.TagOverridesFile != tc.wantOverrides {
+				t.Errorf("expected TagOverridesFile %q, got %q", tc.wantOverrides, cfg.TagOverridesFile)
 			}
 		})
 	}

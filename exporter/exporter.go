@@ -2,12 +2,15 @@
 package exporter
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/teamfighter/servercore-billing-exporter/api"
+	"github.com/teamfighter/servercore-billing-exporter/openstack"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -21,6 +24,27 @@ const (
 	// hoursPerDay converts prediction hours to days.
 	hoursPerDay = 24.0
 )
+
+// TagOverrides maps VM name prefixes to tag key-value overrides.
+// Used as a fallback for VMs that have no tags in OpenStack.
+type TagOverrides map[string]map[string]string
+
+// LoadTagOverrides reads tag overrides from a JSON file.
+// Returns nil map if path is empty (feature disabled).
+func LoadTagOverrides(path string) (TagOverrides, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading tag overrides file: %w", err)
+	}
+	var overrides TagOverrides
+	if err := json.Unmarshal(data, &overrides); err != nil {
+		return nil, fmt.Errorf("parsing tag overrides JSON: %w", err)
+	}
+	return overrides, nil
+}
 
 // serviceDisplayNames maps Servercore provider_key values to human-readable names.
 var serviceDisplayNames = map[string]string{
@@ -64,7 +88,8 @@ func clarifyUnit(metric string, unit string) string {
 
 // Exporter collects Servercore billing metrics and implements prometheus.Collector.
 type Exporter struct {
-	client *api.Client
+	client     *api.Client
+	tagFetcher openstack.TagFetcher
 
 	// Balance metrics.
 	balanceByType *prometheus.Desc
@@ -75,20 +100,36 @@ type Exporter struct {
 	// Prediction.
 	predictionDays *prometheus.Desc // now with billing_type label
 
-	// Consumption.
-	consumptionCost     *prometheus.Desc
-	resourceCost        *prometheus.Desc
-	resourceQuantity    *prometheus.Desc
+	// Consumption (project-level, backward compatible).
+	consumptionCost  *prometheus.Desc
+	resourceCost     *prometheus.Desc
+	resourceQuantity *prometheus.Desc
+
+	// Per-VM consumption with OpenStack tags.
+	vmCost *prometheus.Desc
+
+	// Per-disk/volume cost linked to parent VM.
+	diskCost *prometheus.Desc
 
 	// Scrape metadata.
 	scrapeSuccess  *prometheus.Desc
 	scrapeDuration *prometheus.Desc
+
+	exportedTags []string
+	tagOverrides TagOverrides
 }
 
 // New creates a new Exporter with the given API client.
-func New(client *api.Client) *Exporter {
+// tagFetcher may be nil to disable OpenStack tag enrichment.
+func New(client *api.Client, tagFetcher openstack.TagFetcher, exportedTags []string, tagOverrides TagOverrides) *Exporter {
+	vmCostLabels := append([]string{"project", "service", "metric", "vm_name"}, exportedTags...)
+	diskCostLabels := append([]string{"project", "service", "metric", "disk_name", "parent_vm"}, exportedTags...)
+
 	return &Exporter{
-		client: client,
+		client:       client,
+		tagFetcher:   tagFetcher,
+		exportedTags: exportedTags,
+		tagOverrides: tagOverrides,
 
 		balanceByType: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "balance", "by_type"),
@@ -122,13 +163,23 @@ func New(client *api.Client) *Exporter {
 		),
 		resourceCost: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "resource", "cost"),
-			"Current billing period resource cost by project, service and metric in account currency.",
+			"Current billing period resource cost by project, service, and metric.",
 			[]string{"project", "service", "metric"}, nil,
 		),
 		resourceQuantity: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "resource", "quantity"),
-			"Cumulative resource usage for the current billing period (e.g. core-hours, MB-hours).",
+			"Cumulative resource usage for the current billing period.",
 			[]string{"project", "service", "metric", "unit"}, nil,
+		),
+		vmCost: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "vm", "cost"),
+			"Per-VM resource cost with OpenStack tags.",
+			vmCostLabels, nil,
+		),
+		diskCost: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "disk", "cost"),
+			"Per-disk/volume cost linked to parent VM.",
+			diskCostLabels, nil,
 		),
 		scrapeSuccess: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "scrape", "success"),
@@ -153,6 +204,8 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.consumptionCost
 	ch <- e.resourceCost
 	ch <- e.resourceQuantity
+	ch <- e.vmCost
+	ch <- e.diskCost
 	ch <- e.scrapeSuccess
 	ch <- e.scrapeDuration
 }
@@ -161,6 +214,16 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	start := time.Now()
 	success := 1.0
+
+	// Fetch OpenStack tags (best-effort: failure only logs, doesn't fail the scrape).
+	var globalTags map[string]openstack.ServerTags
+	if e.tagFetcher != nil {
+		var err error
+		globalTags, err = e.tagFetcher.FetchAllTags()
+		if err != nil {
+			log.Printf("WARN: openstack tag enrichment failed: %v", err)
+		}
+	}
 
 	if err := e.collectBalance(ch); err != nil {
 		log.Printf("ERROR collecting balance: %v", err)
@@ -174,6 +237,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 	if err := e.collectConsumption(ch); err != nil {
 		log.Printf("ERROR collecting consumption: %v", err)
+		success = 0
+	}
+
+	if err := e.collectObjectConsumption(ch, globalTags); err != nil {
+		log.Printf("ERROR collecting object consumption: %v", err)
 		success = 0
 	}
 
@@ -227,11 +295,17 @@ func (e *Exporter) collectPrediction(ch chan<- prometheus.Metric) error {
 	return nil
 }
 
-func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
+
+
+// billingDateRange returns the start-of-month and now timestamps for billing queries.
+func billingDateRange() (startDate, endDate string) {
 	now := time.Now().UTC()
 	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	startDate := startOfMonth.Format("2006-01-02T15:04:05")
-	endDate := now.Format("2006-01-02T15:04:05")
+	return startOfMonth.Format("2006-01-02T15:04:05"), now.Format("2006-01-02T15:04:05")
+}
+
+func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
+	startDate, endDate := billingDateRange()
 
 	// Fetch aggregated consumption by project × service.
 	projResp, err := e.client.FetchConsumption(startDate, endDate, "project")
@@ -244,6 +318,7 @@ func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
 		if item.Project != nil {
 			project = item.Project.Name
 		}
+
 		ch <- prometheus.MustNewConstMetric(
 			e.consumptionCost, prometheus.GaugeValue,
 			float64(item.Value)/kopecksPerUnit,
@@ -279,4 +354,179 @@ func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
 	}
 
 	return nil
+}
+
+// diskObjectTypes are billing object types that represent disk/volume resources.
+var diskObjectTypes = map[string]bool{
+	"volume_gigabytes_fast":      true,
+	"volume_gigabytes_basic":     true,
+	"volume_gigabytes_universal": true,
+	"volume_backups_gigabytes":   true,
+	"snapshot_gigabytes_basic":   true,
+	"snapshot_gigabytes_fast":    true,
+}
+
+// diskKey uniquely identifies a disk cost series for aggregation.
+type diskKey struct {
+	project  string
+	service  string
+	metric   string
+	diskName string
+	parentVM string
+	tagsHash string
+}
+
+// collectObjectConsumption fetches per-object billing data.
+// Emits sc_vm_cost for VMs and sc_disk_cost for disk/volume objects.
+func (e *Exporter) collectObjectConsumption(ch chan<- prometheus.Metric, globalTags map[string]openstack.ServerTags) error {
+	startDate, endDate := billingDateRange()
+
+	resp, err := e.client.FetchConsumption(startDate, endDate, "object_metric")
+	if err != nil {
+		return fmt.Errorf("consumption (object_metric): %w", err)
+	}
+
+	// Pre-aggregate disk costs to avoid duplicate series when multiple
+	// billing objects share the same name.
+	diskAgg := make(map[diskKey]float64)
+	vmAgg := make(map[diskKey]float64)
+
+	for _, item := range resp.Data {
+		if item.Object == nil || item.Metric == nil {
+			continue
+		}
+
+		project := "unknown"
+		if item.Project != nil {
+			project = item.Project.Name
+		}
+
+		switch {
+		case item.Object.Type == "cloud_vm":
+			e.processVMItem(item, project, globalTags, vmAgg)
+		case diskObjectTypes[item.Object.Type]:
+			e.processDiskItem(item, project, globalTags, diskAgg)
+		}
+	}
+
+	e.emitAggregatedMetrics(ch, diskAgg, e.diskCost, true)
+	e.emitAggregatedMetrics(ch, vmAgg, e.vmCost, false)
+
+	return nil
+}
+
+func (e *Exporter) emitAggregatedMetrics(ch chan<- prometheus.Metric, agg map[diskKey]float64, desc *prometheus.Desc, isDisk bool) {
+	for key, val := range agg {
+		var tags []string
+		if key.tagsHash != "" {
+			tags = strings.Split(key.tagsHash, "\x00")
+		} else {
+			tags = make([]string, len(e.exportedTags))
+		}
+		
+		var labelValues []string
+		if isDisk {
+			labelValues = append([]string{key.project, key.service, key.metric, key.diskName, key.parentVM}, tags...)
+		} else {
+			labelValues = append([]string{key.project, key.service, key.metric, key.parentVM}, tags...)
+		}
+		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, val, labelValues...)
+	}
+}
+
+func (e *Exporter) processVMItem(item api.ConsumptionItem, project string, globalTags map[string]openstack.ServerTags, vmAgg map[diskKey]float64) {
+	vmName, tagValues := e.resolveVM(item, globalTags)
+
+	key := diskKey{
+		project:  project,
+		service:  humanizeService(item.ProviderKey),
+		metric:   item.Metric.ID,
+		parentVM: vmName, // Reusing parentVM as the main VM name
+		tagsHash: strings.Join(tagValues, "\x00"),
+	}
+	vmAgg[key] += float64(item.Value) / kopecksPerUnit
+}
+
+func (e *Exporter) processDiskItem(item api.ConsumptionItem, project string, globalTags map[string]openstack.ServerTags, diskAgg map[diskKey]float64) {
+	diskName := item.Object.Name
+	if diskName == "" {
+		diskName = item.Object.ID
+	}
+	
+	parentVM := extractParentVMName(item.Object.ParentName)
+	tagValues := e.extractTagValues(parentVM, parentVM, globalTags)
+
+	key := diskKey{
+		project:  project,
+		service:  humanizeService(item.ProviderKey),
+		metric:   item.Metric.ID,
+		diskName: diskName,
+		parentVM: item.Object.ParentName,
+		tagsHash: strings.Join(tagValues, "\x00"),
+	}
+	diskAgg[key] += float64(item.Value) / kopecksPerUnit
+}
+
+// resolveVM extracts the VM display name and OpenStack tags for a billing item.
+func (e *Exporter) resolveVM(item api.ConsumptionItem, globalTags map[string]openstack.ServerTags) (vmName string, tagValues []string) {
+	vmName = item.Object.Name
+	if vmName == "" {
+		vmName = item.Object.ID
+	}
+	tagValues = e.extractTagValues(item.Object.ID, vmName, globalTags)
+	return
+}
+
+func (e *Exporter) extractTagValues(vmID, vmName string, globalTags map[string]openstack.ServerTags) []string {
+	if len(e.exportedTags) == 0 {
+		return nil
+	}
+	tagValues := make([]string, len(e.exportedTags))
+	for i := range tagValues {
+		tagValues[i] = "Untagged"
+	}
+	if globalTags != nil {
+		if tags, ok := globalTags[vmID]; ok {
+			for i, t := range e.exportedTags {
+				if tags[t] != "" {
+					tagValues[i] = tags[t]
+				}
+			}
+		}
+	}
+	// Fallback: apply prefix-based overrides for any remaining "Untagged" values.
+	e.applyPrefixOverrides(vmName, tagValues)
+	return tagValues
+}
+
+// applyPrefixOverrides checks if any tag value is still "Untagged" and applies
+// prefix-based overrides from the TAG_OVERRIDES_FILE configuration.
+func (e *Exporter) applyPrefixOverrides(vmName string, tagValues []string) {
+	if len(e.tagOverrides) == 0 {
+		return
+	}
+	for prefix, overrideTags := range e.tagOverrides {
+		if strings.HasPrefix(vmName, prefix) {
+			for i, t := range e.exportedTags {
+				if tagValues[i] == "Untagged" {
+					if val, ok := overrideTags[t]; ok {
+						tagValues[i] = val
+					}
+				}
+			}
+			return
+		}
+	}
+}
+
+// extractParentVMName extracts the VM name from a billing API parent_name.
+// Billing API returns disk parents as "disk-for-<VM_NAME>-#N"; this strips
+// the "disk-for-" prefix and the "-#N" suffix. If the format doesn't match,
+// returns the original string.
+func extractParentVMName(parentName string) string {
+	name := strings.TrimPrefix(parentName, "disk-for-")
+	if idx := strings.LastIndex(name, "-#"); idx >= 0 {
+		name = name[:idx]
+	}
+	return name
 }
