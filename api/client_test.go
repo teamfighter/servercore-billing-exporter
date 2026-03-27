@@ -169,6 +169,27 @@ func TestFetchConsumptionWithMetrics(t *testing.T) {
 	}
 }
 
+func TestFetchConsumptionMonthly(t *testing.T) {
+	srv := newTestServer(t, map[string]string{
+		"/v1/cloud_billing/statistic/consumption": "../testdata/consumption_project.json",
+	})
+	defer srv.Close()
+
+	client := NewClient(testToken, srv.URL)
+	resp, err := client.FetchConsumptionMonthly(testStartDate, testEndDate, "project")
+	if err != nil {
+		t.Fatalf("FetchConsumptionMonthly() error: %v", err)
+	}
+
+	if resp.Status != "success" {
+		t.Errorf("expected status success, got %s", resp.Status)
+	}
+
+	if len(resp.Data) != 4 {
+		t.Fatalf("expected 4 consumption items, got %d", len(resp.Data))
+	}
+}
+
 func TestClientUnauthorized(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
@@ -190,6 +211,11 @@ func TestClientUnauthorized(t *testing.T) {
 	_, err = client.FetchConsumption(testStartDate, testEndDate, "project")
 	if err == nil {
 		t.Fatal("expected error for unauthorized FetchConsumption")
+	}
+
+	_, err = client.FetchConsumptionMonthly(testStartDate, testEndDate, "project")
+	if err == nil {
+		t.Fatal("expected error for unauthorized FetchConsumptionMonthly")
 	}
 }
 
@@ -256,6 +282,11 @@ func TestClientInvalidJSON(t *testing.T) {
 	_, err = client.FetchConsumption(testStartDate, testEndDate, "project")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON on FetchConsumption")
+	}
+
+	_, err = client.FetchConsumptionMonthly(testStartDate, testEndDate, "project")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON on FetchConsumptionMonthly")
 	}
 }
 

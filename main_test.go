@@ -285,3 +285,54 @@ func TestMainFunc(t *testing.T) {
 		t.Fatal("main did not shut down gracefully in time")
 	}
 }
+
+func TestParseConfigBillingHistoryMonths(t *testing.T) {
+	originalToken := os.Getenv("TOKEN")
+	originalHist := os.Getenv("BILLING_HISTORY_MONTHS")
+	defer func() {
+		os.Setenv("TOKEN", originalToken)
+		os.Setenv("BILLING_HISTORY_MONTHS", originalHist)
+	}()
+
+	os.Setenv("TOKEN", "test-token")
+
+	// Default = 12
+	os.Setenv("BILLING_HISTORY_MONTHS", "")
+	cfg, err := parseConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.BillingHistMonths != 12 {
+		t.Errorf("default BillingHistMonths = %d, want 12", cfg.BillingHistMonths)
+	}
+
+	// Custom value
+	os.Setenv("BILLING_HISTORY_MONTHS", "24")
+	cfg, err = parseConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.BillingHistMonths != 24 {
+		t.Errorf("BillingHistMonths = %d, want 24", cfg.BillingHistMonths)
+	}
+
+	// Disabled
+	os.Setenv("BILLING_HISTORY_MONTHS", "0")
+	cfg, err = parseConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.BillingHistMonths != 0 {
+		t.Errorf("BillingHistMonths = %d, want 0", cfg.BillingHistMonths)
+	}
+
+	// Invalid
+	os.Setenv("BILLING_HISTORY_MONTHS", "abc")
+	_, err = parseConfig()
+	if err == nil {
+		t.Fatal("expected error for invalid BILLING_HISTORY_MONTHS, got nil")
+	}
+	if !strings.Contains(err.Error(), "BILLING_HISTORY_MONTHS") {
+		t.Errorf("error should mention BILLING_HISTORY_MONTHS: %v", err)
+	}
+}

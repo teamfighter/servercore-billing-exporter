@@ -120,6 +120,25 @@ func (c *Client) FetchConsumption(startDate, endDate, groupType string) (*Consum
 	return &resp, nil
 }
 
+// FetchConsumptionMonthly retrieves consumption statistics grouped by month.
+// Returns per-month breakdown with project × service aggregation.
+// Each item's Period field indicates the month (e.g. "2026-01-01T00:00:00").
+func (c *Client) FetchConsumptionMonthly(startDate, endDate, groupType string) (*ConsumptionResponse, error) {
+	path := fmt.Sprintf(
+		"/v1/cloud_billing/statistic/consumption?%s&start=%s&end=%s&locale=en&group_type=%s&period_group_type=month",
+		buildProviderKeysParam(),
+		startDate,
+		endDate,
+		groupType,
+	)
+
+	var resp ConsumptionResponse
+	if err := c.doRequest(path, &resp); err != nil {
+		return nil, fmt.Errorf("fetching consumption monthly (%s): %w", groupType, err)
+	}
+	return &resp, nil
+}
+
 // buildProviderKeysParam constructs the repeated provider_keys query parameter.
 func buildProviderKeysParam() string {
 	var parts []string
