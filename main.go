@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,11 +30,12 @@ import (
 
 // config holds application configuration parsed from environment variables.
 type config struct {
-	Token            string
-	ListenAddr       string
-	OpenStackConf    string
-	ExportedTags     []string
-	TagOverridesFile string
+	Token              string
+	ListenAddr         string
+	OpenStackConf      string
+	ExportedTags       []string
+	TagOverridesFile   string
+	BillingHistMonths  int
 }
 
 // parseConfig reads configuration from environment variables.
@@ -59,12 +61,22 @@ func parseConfig() (*config, error) {
 		}
 	}
 
+	histMonths := 12 // default
+	if v := os.Getenv("BILLING_HISTORY_MONTHS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("BILLING_HISTORY_MONTHS must be an integer: %w", err)
+		}
+		histMonths = n
+	}
+
 	return &config{
-		Token:            token,
-		ListenAddr:       listenAddr,
-		OpenStackConf:    os.Getenv("OPENSTACK_CONFIG"),
-		ExportedTags:     exportedTags,
-		TagOverridesFile: os.Getenv("TAG_OVERRIDES_FILE"),
+		Token:              token,
+		ListenAddr:         listenAddr,
+		OpenStackConf:      os.Getenv("OPENSTACK_CONFIG"),
+		ExportedTags:       exportedTags,
+		TagOverridesFile:   os.Getenv("TAG_OVERRIDES_FILE"),
+		BillingHistMonths:  histMonths,
 	}, nil
 }
 
@@ -136,7 +148,8 @@ func main() {
 		log.Printf("Loaded %d prefix tag overrides", len(tagOverrides))
 	}
 
-	exp := exporter.New(client, tagFetcher, cfg.ExportedTags, tagOverrides)
+	exp := exporter.New(client, tagFetcher, cfg.ExportedTags, tagOverrides, cfg.BillingHistMonths)
+	log.Printf("Historical billing: %d months", cfg.BillingHistMonths)
 
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(exp)

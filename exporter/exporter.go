@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/teamfighter/servercore-billing-exporter/api"
@@ -23,6 +24,9 @@ const (
 
 	// hoursPerDay converts prediction hours to days.
 	hoursPerDay = 24.0
+
+	// timeFormat is the layout for Servercore API timestamps.
+	timeFormat = "2006-01-02T15:04:05"
 )
 
 // TagOverrides maps VM name prefixes to tag key-value overrides.
@@ -86,6 +90,9 @@ func clarifyUnit(metric string, unit string) string {
 	return unit + "-hours"
 }
 
+// cacheTTL is the duration historical data is considered fresh.
+const cacheTTL = 24 * time.Hour
+
 // Exporter collects Servercore billing metrics and implements prometheus.Collector.
 type Exporter struct {
 	client     *api.Client
@@ -105,6 +112,9 @@ type Exporter struct {
 	resourceCost     *prometheus.Desc
 	resourceQuantity *prometheus.Desc
 
+	// Historical consumption (monthly aggregated).
+	consumptionCostMonthly *prometheus.Desc
+
 	// Per-VM consumption with OpenStack tags.
 	vmCost *prometheus.Desc
 
@@ -115,21 +125,31 @@ type Exporter struct {
 	scrapeSuccess  *prometheus.Desc
 	scrapeDuration *prometheus.Desc
 
-	exportedTags []string
-	tagOverrides TagOverrides
+	exportedTags  []string
+	tagOverrides  TagOverrides
+	historyMonths int
+
+	// Cache for historical monthly data.
+	historicalMu        sync.Mutex
+	historicalCache     []api.ConsumptionItem
+	historicalCacheTime time.Time
+	nowFunc             func() time.Time // for testing
 }
 
 // New creates a new Exporter with the given API client.
 // tagFetcher may be nil to disable OpenStack tag enrichment.
-func New(client *api.Client, tagFetcher openstack.TagFetcher, exportedTags []string, tagOverrides TagOverrides) *Exporter {
+// historyMonths controls how many past months of billing data to expose (0 = disabled).
+func New(client *api.Client, tagFetcher openstack.TagFetcher, exportedTags []string, tagOverrides TagOverrides, historyMonths int) *Exporter {
 	vmCostLabels := append([]string{"project", "service", "metric", "vm_name"}, exportedTags...)
 	diskCostLabels := append([]string{"project", "service", "metric", "disk_name", "parent_vm"}, exportedTags...)
 
 	return &Exporter{
-		client:       client,
-		tagFetcher:   tagFetcher,
-		exportedTags: exportedTags,
-		tagOverrides: tagOverrides,
+		client:        client,
+		tagFetcher:    tagFetcher,
+		exportedTags:  exportedTags,
+		tagOverrides:  tagOverrides,
+		historyMonths: historyMonths,
+		nowFunc:       time.Now,
 
 		balanceByType: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "balance", "by_type"),
@@ -160,6 +180,11 @@ func New(client *api.Client, tagFetcher openstack.TagFetcher, exportedTags []str
 			prometheus.BuildFQName(namespace, "consumption", "cost"),
 			"Current month consumption cost by project and service in account currency.",
 			[]string{"project", "service"}, nil,
+		),
+		consumptionCostMonthly: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "consumption", "cost_monthly"),
+			"Historical monthly consumption cost by project, service, and period.",
+			[]string{"project", "service", "period"}, nil,
 		),
 		resourceCost: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "resource", "cost"),
@@ -202,6 +227,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.debtByService
 	ch <- e.predictionDays
 	ch <- e.consumptionCost
+	ch <- e.consumptionCostMonthly
 	ch <- e.resourceCost
 	ch <- e.resourceQuantity
 	ch <- e.vmCost
@@ -237,6 +263,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 	if err := e.collectConsumption(ch); err != nil {
 		log.Printf("ERROR collecting consumption: %v", err)
+		success = 0
+	}
+
+	if err := e.collectHistoricalConsumption(ch); err != nil {
+		log.Printf("ERROR collecting historical consumption: %v", err)
 		success = 0
 	}
 
@@ -301,7 +332,7 @@ func (e *Exporter) collectPrediction(ch chan<- prometheus.Metric) error {
 func billingDateRange() (startDate, endDate string) {
 	now := time.Now().UTC()
 	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	return startOfMonth.Format("2006-01-02T15:04:05"), now.Format("2006-01-02T15:04:05")
+	return startOfMonth.Format(timeFormat), now.Format(timeFormat)
 }
 
 func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
@@ -354,6 +385,81 @@ func (e *Exporter) collectConsumption(ch chan<- prometheus.Metric) error {
 	}
 
 	return nil
+}
+
+// collectHistoricalConsumption fetches and caches monthly billing data.
+// Past months are cached for cacheTTL (24h); current month is excluded
+// (it's already covered by collectConsumption).
+func (e *Exporter) collectHistoricalConsumption(ch chan<- prometheus.Metric) error {
+	if e.historyMonths <= 0 {
+		return nil
+	}
+
+	items, err := e.getCachedHistoricalData()
+	if err != nil {
+		return err
+	}
+
+	now := e.nowFunc().UTC()
+	currentPeriod := now.Format("2006-01")
+
+	for _, item := range items {
+		period := formatPeriod(item.Period)
+		if period == currentPeriod {
+			continue // skip current month, already in sc_consumption_cost
+		}
+
+		project := "unknown"
+		if item.Project != nil {
+			project = item.Project.Name
+		}
+
+		ch <- prometheus.MustNewConstMetric(
+			e.consumptionCostMonthly, prometheus.GaugeValue,
+			float64(item.Value)/kopecksPerUnit,
+			project, humanizeService(item.ProviderKey), period,
+		)
+	}
+	return nil
+}
+
+// getCachedHistoricalData returns cached data if fresh, otherwise fetches from API.
+func (e *Exporter) getCachedHistoricalData() ([]api.ConsumptionItem, error) {
+	e.historicalMu.Lock()
+	defer e.historicalMu.Unlock()
+
+	now := e.nowFunc()
+	if e.historicalCache != nil && now.Sub(e.historicalCacheTime) < cacheTTL {
+		if now.Month() == e.historicalCacheTime.Month() && now.Year() == e.historicalCacheTime.Year() {
+			return e.historicalCache, nil
+		}
+	}
+
+	startDate, endDate := historicalDateRange(now, e.historyMonths)
+	resp, err := e.client.FetchConsumptionMonthly(startDate, endDate, "project")
+	if err != nil {
+		return nil, fmt.Errorf("historical consumption: %w", err)
+	}
+
+	e.historicalCache = resp.Data
+	e.historicalCacheTime = now
+	log.Printf("Refreshed historical billing cache: %d items, range %s..%s", len(resp.Data), startDate, endDate)
+	return resp.Data, nil
+}
+
+// historicalDateRange computes a date range from N months ago to now.
+func historicalDateRange(now time.Time, months int) (startDate, endDate string) {
+	now = now.UTC()
+	start := time.Date(now.Year(), now.Month()-time.Month(months), 1, 0, 0, 0, 0, time.UTC)
+	return start.Format(timeFormat), now.Format(timeFormat)
+}
+
+// formatPeriod converts an API period string (e.g. "2026-01-01T00:00:00") to "2026-01".
+func formatPeriod(period string) string {
+	if len(period) >= 7 {
+		return period[:7]
+	}
+	return period
 }
 
 // diskObjectTypes are billing object types that represent disk/volume resources.

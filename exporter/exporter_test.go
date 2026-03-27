@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/teamfighter/servercore-billing-exporter/api"
 	"github.com/teamfighter/servercore-billing-exporter/openstack"
@@ -66,7 +67,7 @@ func testAPIServer(t *testing.T) *httptest.Server {
 
 func TestExporterDescribe(t *testing.T) {
 	client := api.NewClient("test", "http://localhost")
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	ch := make(chan *prometheus.Desc, 20)
 	exp.Describe(ch)
@@ -77,9 +78,9 @@ func TestExporterDescribe(t *testing.T) {
 		descs = append(descs, d)
 	}
 
-	// We expect exactly 12 metric descriptors.
-	if len(descs) != 12 {
-		t.Errorf("expected 12 descriptors, got %d", len(descs))
+	// We expect exactly 13 metric descriptors.
+	if len(descs) != 13 {
+		t.Errorf("expected 13 descriptors, got %d", len(descs))
 	}
 }
 
@@ -88,7 +89,7 @@ func TestExporterCollect(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// Collect all metrics.
 	ch := make(chan prometheus.Metric, 50)
@@ -123,7 +124,7 @@ func TestExporterScrapeSuccess(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// Register and check that scrape_success = 1.
 	registry := prometheus.NewPedanticRegistry()
@@ -158,7 +159,7 @@ func TestExporterBalanceTotal(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	expected := strings.NewReader(`
 		# HELP sc_balance_total Total account balance in account currency.
@@ -176,7 +177,7 @@ func TestExporterPrediction(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	expected := strings.NewReader(`
 		# HELP sc_prediction_days Estimated number of days until the balance is exhausted.
@@ -208,7 +209,7 @@ func TestExporterPredictionAllNull(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// When all predictions are null, no sc_prediction_days metrics should be emitted.
 	ch := make(chan prometheus.Metric, 50)
@@ -231,7 +232,7 @@ func TestExporterAPIFailure(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	expected := strings.NewReader(`
 		# HELP sc_scrape_success Whether the last scrape was successful (1 = success, 0 = failure).
@@ -259,7 +260,7 @@ func TestExporterPartialAPIFailure(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// scrape_success should be 0 because prediction and consumption failed.
 	expected := strings.NewReader(`
@@ -291,7 +292,7 @@ func TestExporterEmptyBillings(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// Empty billings triggers an error, so scrape_success = 0.
 	expected := strings.NewReader(`
@@ -325,7 +326,7 @@ func TestExporterEmptyConsumption(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// scrape should succeed, just no consumption metrics.
 	expected := strings.NewReader(`
@@ -359,7 +360,7 @@ func TestExporterConsumptionNilProject(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	expected := strings.NewReader(`
 		# HELP sc_consumption_cost Current month consumption cost by project and service in account currency.
@@ -425,7 +426,7 @@ func TestExporterConsumptionProjectMetricFailure(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// Since consumption/project_metric failed, scrape_success should be 0.
 	expected := strings.NewReader(`
@@ -461,7 +462,7 @@ func TestExporterConsumptionNilMetric(t *testing.T) {
 	defer srv.Close()
 
 	client := api.NewClient(testToken, srv.URL)
-	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, nil, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// It should succeed, but metric should be skipped -> no resourceCost emitted
 	ch := make(chan prometheus.Metric, 50)
@@ -514,7 +515,7 @@ func TestExporterVMCostWithTags(t *testing.T) {
 			"server-aaa": {"tag2": "owner@example.com", "tag3": "lead@example.com", "tag1": "Platform"},
 		},
 	}
-	exp := New(client, fetcher, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, fetcher, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	expected := strings.NewReader(`
 		# HELP sc_vm_cost Per-VM resource cost with OpenStack tags.
@@ -555,7 +556,7 @@ func TestExporterVMCostNoMatch(t *testing.T) {
 			"server-aaa": {"tag2": "owner@example.com", "tag3": "lead@example.com", "tag1": "Platform"},
 		},
 	}
-	exp := New(client, fetcher, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, fetcher, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// Tags should be empty because server-unknown is not in the tags map.
 	expected := strings.NewReader(`
@@ -588,7 +589,7 @@ func TestExporterTagFetcherError(t *testing.T) {
 
 	client := api.NewClient(testToken, srv.URL)
 	fetcher := &mockTagFetcher{err: fmt.Errorf("keystone unreachable")}
-	exp := New(client, fetcher, []string{"tag1", "tag2", "tag3"}, nil)
+	exp := New(client, fetcher, []string{"tag1", "tag2", "tag3"}, nil, 0)
 
 	// scrape_success should be 1 despite tag fetcher error.
 	expected := strings.NewReader(`
@@ -619,7 +620,7 @@ func TestExtractParentVMName(t *testing.T) {
 }
 
 func TestProcessDiskItem(t *testing.T) {
-	exp := New(nil, nil, []string{"tag1", "tag2"}, nil)
+	exp := New(nil, nil, []string{"tag1", "tag2"}, nil, 0)
 	diskAgg := make(map[diskKey]float64)
 
 	item := api.ConsumptionItem{
@@ -662,7 +663,7 @@ func TestApplyPrefixOverrides(t *testing.T) {
 		overrides := TagOverrides{
 			"k8s-prod-node": {"team": "Platform", "bo": "ops@example.com"},
 		}
-		exp := New(nil, nil, []string{"team", "bo"}, overrides)
+		exp := New(nil, nil, []string{"team", "bo"}, overrides, 0)
 		tagValues := []string{"Untagged", "Untagged"}
 
 		exp.applyPrefixOverrides("k8s-prod-node-abc123", tagValues)
@@ -679,7 +680,7 @@ func TestApplyPrefixOverrides(t *testing.T) {
 		overrides := TagOverrides{
 			"k8s-prod": {"team": "Platform"},
 		}
-		exp := New(nil, nil, []string{"team"}, overrides)
+		exp := New(nil, nil, []string{"team"}, overrides, 0)
 		tagValues := []string{"Untagged"}
 
 		exp.applyPrefixOverrides("web-server-01", tagValues)
@@ -690,7 +691,7 @@ func TestApplyPrefixOverrides(t *testing.T) {
 	})
 
 	t.Run("empty overrides is no-op", func(t *testing.T) {
-		exp := New(nil, nil, []string{"team"}, nil)
+		exp := New(nil, nil, []string{"team"}, nil, 0)
 		tagValues := []string{"Untagged"}
 
 		exp.applyPrefixOverrides("anything", tagValues)
@@ -704,7 +705,7 @@ func TestApplyPrefixOverrides(t *testing.T) {
 		overrides := TagOverrides{
 			"k8s-prod": {"team": "Platform", "bo": "override@example.com"},
 		}
-		exp := New(nil, nil, []string{"team", "bo"}, overrides)
+		exp := New(nil, nil, []string{"team", "bo"}, overrides, 0)
 		tagValues := []string{"ExistingTeam", "Untagged"}
 
 		exp.applyPrefixOverrides("k8s-prod-node-01", tagValues)
@@ -721,7 +722,7 @@ func TestApplyPrefixOverrides(t *testing.T) {
 		overrides := TagOverrides{
 			"web-": {"team": "Backend", "nonexistent": "ignored"},
 		}
-		exp := New(nil, nil, []string{"team"}, overrides)
+		exp := New(nil, nil, []string{"team"}, overrides, 0)
 		tagValues := []string{"Untagged"}
 
 		exp.applyPrefixOverrides("web-server-01", tagValues)
@@ -735,7 +736,7 @@ func TestApplyPrefixOverrides(t *testing.T) {
 		overrides := TagOverrides{
 			"exact-name": {"team": "Exact"},
 		}
-		exp := New(nil, nil, []string{"team"}, overrides)
+		exp := New(nil, nil, []string{"team"}, overrides, 0)
 		tagValues := []string{"Untagged"}
 
 		exp.applyPrefixOverrides("exact-name", tagValues)
@@ -817,3 +818,235 @@ func TestLoadTagOverrides(t *testing.T) {
 	})
 }
 
+// --- Historical billing tests ---
+
+func TestFormatPeriod(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"2026-01-01T00:00:00", "2026-01"},
+		{"2026-12-01T00:00:00", "2026-12"},
+		{"2025-03-01T00:00:00", "2025-03"},
+		{"short", "short"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := formatPeriod(tt.input)
+		if got != tt.want {
+			t.Errorf("formatPeriod(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestHistoricalDateRange(t *testing.T) {
+	now := time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+
+	start, end := historicalDateRange(now, 12)
+	if start != "2025-03-01T00:00:00" {
+		t.Errorf("start = %q, want %q", start, "2025-03-01T00:00:00")
+	}
+	if end != "2026-03-27T14:00:00" {
+		t.Errorf("end = %q, want %q", end, "2026-03-27T14:00:00")
+	}
+
+	start2, _ := historicalDateRange(now, 3)
+	if start2 != "2025-12-01T00:00:00" {
+		t.Errorf("start (3 months) = %q, want %q", start2, "2025-12-01T00:00:00")
+	}
+}
+
+func TestCollectHistoricalConsumption_Disabled(t *testing.T) {
+	exp := New(nil, nil, nil, nil, 0)
+	ch := make(chan prometheus.Metric, 100)
+	err := exp.collectHistoricalConsumption(ch)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ch) != 0 {
+		t.Errorf("expected 0 metrics when disabled, got %d", len(ch))
+	}
+}
+
+// historicalAPIServer creates a mock that serves monthly consumption data.
+func historicalAPIServer(t *testing.T, callCounter *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerCType, headerJSON)
+
+		if r.URL.Path != pathConsumption {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+
+		periodGroupType := r.URL.Query().Get("period_group_type")
+		groupType := r.URL.Query().Get("group_type")
+
+		if periodGroupType == "month" && groupType == "project" {
+			*callCounter++
+			w.Write([]byte(`{
+				"status": "ok",
+				"data": [
+					{
+						"account_id": "12345",
+						"provider_key": "vpc",
+						"value": 1500000,
+						"period": "2026-01-01T00:00:00",
+						"project": {"id": "p1", "name": "prod"},
+						"metric": null,
+						"object": null,
+						"provision_end": ""
+					},
+					{
+						"account_id": "12345",
+						"provider_key": "dbaas",
+						"value": 500000,
+						"period": "2026-01-01T00:00:00",
+						"project": {"id": "p2", "name": "infra"},
+						"metric": null,
+						"object": null,
+						"provision_end": ""
+					},
+					{
+						"account_id": "12345",
+						"provider_key": "vpc",
+						"value": 1600000,
+						"period": "2026-02-01T00:00:00",
+						"project": {"id": "p1", "name": "prod"},
+						"metric": null,
+						"object": null,
+						"provision_end": ""
+					},
+					{
+						"account_id": "12345",
+						"provider_key": "vpc",
+						"value": 800000,
+						"period": "2026-03-01T00:00:00",
+						"project": {"id": "p1", "name": "prod"},
+						"metric": null,
+						"object": null,
+						"provision_end": ""
+					}
+				]
+			}`))
+			return
+		}
+
+		// Default: serve project fixture for non-monthly queries
+		data, err := os.ReadFile(fixtureConsProject)
+		if err != nil {
+			t.Fatalf("reading fixture: %v", err)
+		}
+		w.Write(data)
+	}))
+}
+
+func TestCollectHistoricalConsumption(t *testing.T) {
+	callCount := 0
+	srv := historicalAPIServer(t, &callCount)
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	exp := New(client, nil, nil, nil, 12)
+	// Fix time to March 2026 so current month = "2026-03"
+	exp.nowFunc = func() time.Time {
+		return time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+	}
+
+	ch := make(chan prometheus.Metric, 100)
+	err := exp.collectHistoricalConsumption(ch)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	close(ch)
+
+	if callCount != 1 {
+		t.Errorf("expected 1 API call, got %d", callCount)
+	}
+
+	// Should emit 3 metrics: Jan prod/vpc, Jan infra/dbaas, Feb prod/vpc
+	// March is excluded (current month)
+	var metrics []prometheus.Metric
+	for m := range ch {
+		metrics = append(metrics, m)
+	}
+
+	if len(metrics) != 3 {
+		t.Fatalf("expected 3 metrics (excl current month), got %d", len(metrics))
+	}
+}
+
+func TestCollectHistoricalConsumption_CacheExpiry(t *testing.T) {
+	callCount := 0
+	srv := historicalAPIServer(t, &callCount)
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	exp := New(client, nil, nil, nil, 12)
+
+	baseTime := time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+	exp.nowFunc = func() time.Time { return baseTime }
+
+	// First call — fills cache
+	ch := make(chan prometheus.Metric, 100)
+	exp.collectHistoricalConsumption(ch)
+	if callCount != 1 {
+		t.Fatalf("expected 1 API call, got %d", callCount)
+	}
+
+	// Second call within TTL — uses cache
+	ch2 := make(chan prometheus.Metric, 100)
+	exp.collectHistoricalConsumption(ch2)
+	if callCount != 1 {
+		t.Errorf("expected 1 API call (cached), got %d", callCount)
+	}
+
+	// Advance time past cacheTTL (25 hours)
+	exp.nowFunc = func() time.Time { return baseTime.Add(25 * time.Hour) }
+
+	ch3 := make(chan prometheus.Metric, 100)
+	exp.collectHistoricalConsumption(ch3)
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls after TTL expiry, got %d", callCount)
+	}
+}
+
+func TestCollectHistoricalConsumption_NilProject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerCType, headerJSON)
+		w.Write([]byte(`{
+			"status": "ok",
+			"data": [{
+				"account_id": "12345",
+				"provider_key": "vpc",
+				"value": 100000,
+				"period": "2026-01-01T00:00:00",
+				"project": null,
+				"metric": null,
+				"object": null,
+				"provision_end": ""
+			}]
+		}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	exp := New(client, nil, nil, nil, 12)
+	exp.nowFunc = func() time.Time {
+		return time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+	}
+
+	ch := make(chan prometheus.Metric, 100)
+	err := exp.collectHistoricalConsumption(ch)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	close(ch)
+
+	var metrics []prometheus.Metric
+	for m := range ch {
+		metrics = append(metrics, m)
+	}
+	if len(metrics) != 1 {
+		t.Fatalf("expected 1 metric, got %d", len(metrics))
+	}
+}

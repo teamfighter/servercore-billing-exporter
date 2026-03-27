@@ -11,6 +11,7 @@ Collects account balance, debt, consumption statistics, and billing predictions 
 
 - **Account-level metrics** — balance, debt, and balance depletion prediction
 - **Consumption breakdown** — monthly costs by project × service
+- **Historical consumption** — past month billing costs properly cached (1 day TTL) for longitudinal tracking
 - **Per-resource detail** — cost and quantity per metric (vCPU, RAM, disk, traffic, etc.)
 - **Per-VM cost attribution** — individual VM costs with custom tag labels from OpenStack
 - **Per-disk/volume costs** — disk costs linked to their parent VM
@@ -35,7 +36,8 @@ Collects account balance, debt, consumption statistics, and billing predictions 
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `sc_consumption_cost` | Gauge | `project`, `service` | Monthly cost by project × service |
+| `sc_consumption_cost` | Gauge | `project`, `service` | Monthly cost for the current metric month by project × service |
+| `sc_consumption_cost_monthly` | Gauge | `project`, `service`, `period` | Historical monthly cost by project × service (cached 24h, excludes current active period) |
 | `sc_resource_cost` | Gauge | `project`, `service`, `metric` | Cost per resource metric |
 | `sc_resource_quantity` | Gauge | `project`, `service`, `metric`, `unit` | Resource quantity (vCPU-hours, GB-hours, etc.) |
 
@@ -61,6 +63,7 @@ Collects account balance, debt, consumption statistics, and billing predictions 
 |---------------------|----------|---------|-------------|
 | `TOKEN` | ✅ | — | Servercore API static token |
 | `LISTEN_ADDR` | ❌ | `:9876` | HTTP listen address |
+| `BILLING_HISTORY_MONTHS` | ❌ | `12` | Depth in months for fetching historical data (`sc_consumption_cost_monthly`). Set to `0` to disable history scraping |
 | `OPENSTACK_CONFIG` | ❌ | — | Path to INI file with OpenStack credentials (enables tag enrichment and per-VM metrics) |
 | `EXPORTED_TAGS` | ❌ | — | Comma-separated list of OpenStack tag keys to export as Prometheus labels |
 | `TAG_OVERRIDES_FILE` | ❌ | — | Path to JSON file mapping VM name prefixes to tag values (fallback for untagged VMs) |

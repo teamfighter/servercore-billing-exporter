@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-27
+
+### Added
+
+- **Historical billing observability** — new `sc_consumption_cost_monthly` metric exposes historical billing data
+  - Granularity: Aggregated by `project` and `service` for the past N months
+  - Evaluated up to `BILLING_HISTORY_MONTHS` configured depth (default: 12)
+  - Configurable exclusion of current month to prevent overlap with `sc_consumption_cost`
+- **In-memory History Cache** — thread-safe cache for historical metrics
+  - 24-hour TTL ensures the API is only queried once per day for immutable historical data, respecting exporter best practices
+
 ## [0.2.0] - 2026-03-24
 
 ### Added
@@ -56,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive test suite covering edge-cases (84% total coverage, 100% for exporter module)
 - Comprehensive README with deployment examples (Docker, Kubernetes, binary)
 
-[Unreleased]: https://github.com/teamfighter/servercore-billing-exporter/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/teamfighter/servercore-billing-exporter/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/teamfighter/servercore-billing-exporter/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/teamfighter/servercore-billing-exporter/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/teamfighter/servercore-billing-exporter/releases/tag/v0.1.0
