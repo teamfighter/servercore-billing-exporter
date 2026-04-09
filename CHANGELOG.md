@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-09
+
+### Added
+
+- **Monthly VM cost by team** (`sc_vm_cost_monthly`) — pre-aggregated monthly VM costs by team
+  - Labels: `period` (e.g. `2026-03`) plus all `EXPORTED_TAGS` (e.g. `team`, `bo`, `to`)
+  - Aggregates raw per-VM billing data in the exporter for low Prometheus cardinality (~300 series from ~22k raw items)
+  - Separate 24-hour cache, independent from the project-level historical cache
+  - Only `cloud_vm` objects are included (disks excluded to avoid double-counting)
+  - Current month is excluded (already covered by `sc_vm_cost`)
+  - Ghost VMs (deleted before current month) handled via `TAG_OVERRIDES_FILE` prefix matching
+- **12 new unit tests** for the monthly VM cost feature
+  - Covers: aggregation, caching, ghost VMs, prefix overrides, nil objects, current month exclusion, API failures
+  - Exporter package coverage: 95.7%
+
+### Changed
+
+- **API client timeout** increased from 30s to 120s — the `object_metric` monthly query for 12 months is heavy; since it's cached for 24h this is safe
+
 ## [0.3.0] - 2026-03-27
 
 ### Added

@@ -93,6 +93,19 @@ func clarifyUnit(metric string, unit string) string {
 // cacheTTL is the duration historical data is considered fresh.
 const cacheTTL = 24 * time.Hour
 
+// monthlyTeamKey uniquely identifies an aggregated monthly cost series.
+type monthlyTeamKey struct {
+	tagsHash string
+	period   string
+}
+
+// monthlyTeamCost holds a pre-aggregated monthly cost for a team.
+type monthlyTeamCost struct {
+	tagValues []string
+	period    string
+	cost      float64
+}
+
 // Exporter collects Servercore billing metrics and implements prometheus.Collector.
 type Exporter struct {
 	client     *api.Client
@@ -115,6 +128,9 @@ type Exporter struct {
 	// Historical consumption (monthly aggregated).
 	consumptionCostMonthly *prometheus.Desc
 
+	// Historical VM cost aggregated by team and month.
+	vmCostMonthly *prometheus.Desc
+
 	// Per-VM consumption with OpenStack tags.
 	vmCost *prometheus.Desc
 
@@ -129,11 +145,17 @@ type Exporter struct {
 	tagOverrides  TagOverrides
 	historyMonths int
 
-	// Cache for historical monthly data.
+	// Cache for historical monthly data (project-level).
 	historicalMu        sync.Mutex
 	historicalCache     []api.ConsumptionItem
 	historicalCacheTime time.Time
-	nowFunc             func() time.Time // for testing
+
+	// Cache for historical VM cost data (pre-aggregated by team+period).
+	histVMMu        sync.Mutex
+	histVMCache     []monthlyTeamCost
+	histVMCacheTime time.Time
+
+	nowFunc func() time.Time // for testing
 }
 
 // New creates a new Exporter with the given API client.
@@ -142,6 +164,7 @@ type Exporter struct {
 func New(client *api.Client, tagFetcher openstack.TagFetcher, exportedTags []string, tagOverrides TagOverrides, historyMonths int) *Exporter {
 	vmCostLabels := append([]string{"project", "service", "metric", "vm_name"}, exportedTags...)
 	diskCostLabels := append([]string{"project", "service", "metric", "disk_name", "parent_vm"}, exportedTags...)
+	vmCostMonthlyLabels := append([]string{"period"}, exportedTags...)
 
 	return &Exporter{
 		client:        client,
@@ -206,6 +229,11 @@ func New(client *api.Client, tagFetcher openstack.TagFetcher, exportedTags []str
 			"Per-disk/volume cost linked to parent VM.",
 			diskCostLabels, nil,
 		),
+		vmCostMonthly: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "vm", "cost_monthly"),
+			"Historical monthly VM cost aggregated by team.",
+			vmCostMonthlyLabels, nil,
+		),
 		scrapeSuccess: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "scrape", "success"),
 			"Whether the last scrape was successful (1 = success, 0 = failure).",
@@ -232,6 +260,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.resourceQuantity
 	ch <- e.vmCost
 	ch <- e.diskCost
+	ch <- e.vmCostMonthly
 	ch <- e.scrapeSuccess
 	ch <- e.scrapeDuration
 }
@@ -273,6 +302,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 	if err := e.collectObjectConsumption(ch, globalTags); err != nil {
 		log.Printf("ERROR collecting object consumption: %v", err)
+		success = 0
+	}
+
+	if err := e.collectHistoricalVMConsumption(ch, globalTags); err != nil {
+		log.Printf("ERROR collecting historical VM consumption: %v", err)
 		success = 0
 	}
 
@@ -445,6 +479,91 @@ func (e *Exporter) getCachedHistoricalData() ([]api.ConsumptionItem, error) {
 	e.historicalCacheTime = now
 	log.Printf("Refreshed historical billing cache: %d items, range %s..%s", len(resp.Data), startDate, endDate)
 	return resp.Data, nil
+}
+
+// collectHistoricalVMConsumption fetches and caches historical per-VM billing data,
+// aggregates it by team (exported tags) and period, then emits sc_vm_cost_monthly.
+func (e *Exporter) collectHistoricalVMConsumption(ch chan<- prometheus.Metric, globalTags map[string]openstack.ServerTags) error {
+	if e.historyMonths <= 0 {
+		return nil
+	}
+
+	results, err := e.getCachedHistoricalVMData(globalTags)
+	if err != nil {
+		return err
+	}
+
+	for _, r := range results {
+		labelValues := append([]string{r.period}, r.tagValues...)
+		ch <- prometheus.MustNewConstMetric(e.vmCostMonthly, prometheus.GaugeValue, r.cost, labelValues...)
+	}
+	return nil
+}
+
+// getCachedHistoricalVMData returns pre-aggregated VM costs by team+period.
+// Uses a dedicated cache separate from the project-level historical cache.
+func (e *Exporter) getCachedHistoricalVMData(globalTags map[string]openstack.ServerTags) ([]monthlyTeamCost, error) {
+	e.histVMMu.Lock()
+	defer e.histVMMu.Unlock()
+
+	now := e.nowFunc()
+	if e.histVMCache != nil && now.Sub(e.histVMCacheTime) < cacheTTL {
+		if now.Month() == e.histVMCacheTime.Month() && now.Year() == e.histVMCacheTime.Year() {
+			return e.histVMCache, nil
+		}
+	}
+
+	startDate, endDate := historicalDateRange(now, e.historyMonths)
+	resp, err := e.client.FetchConsumptionMonthly(startDate, endDate, "object_metric")
+	if err != nil {
+		return nil, fmt.Errorf("historical VM consumption: %w", err)
+	}
+
+	results := e.aggregateVMCostByTeam(resp.Data, globalTags, now)
+
+	e.histVMCache = results
+	e.histVMCacheTime = now
+	log.Printf("Refreshed historical VM billing cache: %d raw items -> %d aggregated series, range %s..%s",
+		len(resp.Data), len(results), startDate, endDate)
+	return results, nil
+}
+
+// aggregateVMCostByTeam groups VM billing items by exported tags and period.
+// Only cloud_vm objects are included; the current month is excluded.
+func (e *Exporter) aggregateVMCostByTeam(items []api.ConsumptionItem, globalTags map[string]openstack.ServerTags, now time.Time) []monthlyTeamCost {
+	currentPeriod := now.UTC().Format("2006-01")
+	agg := make(map[monthlyTeamKey]*monthlyTeamCost)
+
+	for _, item := range items {
+		if item.Object == nil || item.Object.Type != "cloud_vm" {
+			continue
+		}
+
+		period := formatPeriod(item.Period)
+		if period == currentPeriod {
+			continue
+		}
+
+		_, tagValues := e.resolveVM(item, globalTags)
+		tagsHash := strings.Join(tagValues, "\x00")
+
+		key := monthlyTeamKey{tagsHash: tagsHash, period: period}
+		if existing, ok := agg[key]; ok {
+			existing.cost += float64(item.Value) / kopecksPerUnit
+		} else {
+			agg[key] = &monthlyTeamCost{
+				tagValues: tagValues,
+				period:    period,
+				cost:      float64(item.Value) / kopecksPerUnit,
+			}
+		}
+	}
+
+	results := make([]monthlyTeamCost, 0, len(agg))
+	for _, v := range agg {
+		results = append(results, *v)
+	}
+	return results
 }
 
 // historicalDateRange computes a date range from N months ago to now.
