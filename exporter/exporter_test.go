@@ -78,9 +78,9 @@ func TestExporterDescribe(t *testing.T) {
 		descs = append(descs, d)
 	}
 
-	// We expect exactly 13 metric descriptors.
-	if len(descs) != 13 {
-		t.Errorf("expected 13 descriptors, got %d", len(descs))
+	// We expect exactly 14 metric descriptors.
+	if len(descs) != 14 {
+		t.Errorf("expected 14 descriptors, got %d", len(descs))
 	}
 }
 
@@ -1048,5 +1048,359 @@ func TestCollectHistoricalConsumption_NilProject(t *testing.T) {
 	}
 	if len(metrics) != 1 {
 		t.Fatalf("expected 1 metric, got %d", len(metrics))
+	}
+}
+
+// --- Historical VM cost (sc_vm_cost_monthly) tests ---
+
+// histVMAPIServer creates a mock that serves object_metric monthly data.
+// callCounter tracks how many times the object_metric monthly endpoint is hit.
+func histVMAPIServer(t *testing.T, callCounter *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerCType, headerJSON)
+
+		if r.URL.Path != pathConsumption {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+
+		periodGroupType := r.URL.Query().Get("period_group_type")
+		groupType := r.URL.Query().Get("group_type")
+
+		if periodGroupType == "month" && groupType == "object_metric" {
+			*callCounter++
+			w.Write([]byte(`{
+				"status": "ok",
+				"data": [
+					{
+						"account_id": "12345", "provider_key": "vpc", "value": 300000,
+						"period": "2026-01-01T00:00:00",
+						"project": {"id": "p1", "name": "prod"},
+						"metric": {"id": "compute_cores", "name": "vCPU", "quantity": 4, "unit": "item"},
+						"object": {"id": "server-aaa", "name": "web1", "type": "cloud_vm"}
+					},
+					{
+						"account_id": "12345", "provider_key": "vpc", "value": 200000,
+						"period": "2026-01-01T00:00:00",
+						"project": {"id": "p1", "name": "prod"},
+						"metric": {"id": "compute_ram", "name": "RAM", "quantity": 8, "unit": "GB"},
+						"object": {"id": "server-aaa", "name": "web1", "type": "cloud_vm"}
+					},
+					{
+						"account_id": "12345", "provider_key": "vpc", "value": 100000,
+						"period": "2026-01-01T00:00:00",
+						"project": {"id": "p1", "name": "prod"},
+						"metric": {"id": "compute_cores", "name": "vCPU", "quantity": 2, "unit": "item"},
+						"object": {"id": "server-bbb", "name": "api1", "type": "cloud_vm"}
+					},
+					{
+						"account_id": "12345", "provider_key": "vpc", "value": 400000,
+						"period": "2026-02-01T00:00:00",
+						"project": {"id": "p1", "name": "prod"},
+						"metric": {"id": "compute_cores", "name": "vCPU", "quantity": 4, "unit": "item"},
+						"object": {"id": "server-aaa", "name": "web1", "type": "cloud_vm"}
+					},
+					{
+						"account_id": "12345", "provider_key": "vpc", "value": 500000,
+						"period": "2026-03-01T00:00:00",
+						"project": {"id": "p1", "name": "prod"},
+						"metric": {"id": "compute_cores", "name": "vCPU", "quantity": 4, "unit": "item"},
+						"object": {"id": "server-aaa", "name": "web1", "type": "cloud_vm"}
+					},
+					{
+						"account_id": "12345", "provider_key": "vpc", "value": 50000,
+						"period": "2026-01-01T00:00:00",
+						"project": {"id": "p1", "name": "prod"},
+						"metric": {"id": "volume_standard", "name": "Volume", "quantity": 100, "unit": "GB"},
+						"object": {"id": "disk-123", "name": "data-disk", "type": "volume_gigabytes_fast"}
+					}
+				]
+			}`))
+			return
+		}
+
+		// Default for non-monthly queries.
+		w.Write([]byte(`{"status":"success","data":[]}`))
+	}))
+}
+
+func TestCollectHistoricalVMConsumptionBasic(t *testing.T) {
+	callCount := 0
+	srv := histVMAPIServer(t, &callCount)
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	fetcher := &mockTagFetcher{
+		tags: map[string]openstack.ServerTags{
+			"server-aaa": {"team": "Platform"},
+			"server-bbb": {"team": "Backend"},
+		},
+	}
+	exp := New(client, fetcher, []string{"team"}, nil, 12)
+	exp.nowFunc = func() time.Time {
+		return time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+	}
+
+	ch := make(chan prometheus.Metric, 100)
+	err := exp.collectHistoricalVMConsumption(ch, fetcher.tags)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	close(ch)
+
+	if callCount != 1 {
+		t.Errorf("expected 1 API call, got %d", callCount)
+	}
+
+	// Expected aggregation (current month 2026-03 excluded, disks excluded):
+	// 2026-01, Platform: 3000 + 2000 = 5000
+	// 2026-01, Backend: 1000
+	// 2026-02, Platform: 4000
+	// Total: 3 series
+	var metrics []prometheus.Metric
+	for m := range ch {
+		metrics = append(metrics, m)
+	}
+
+	if len(metrics) != 3 {
+		t.Fatalf("expected 3 aggregated metrics, got %d", len(metrics))
+	}
+}
+
+func TestCollectHistoricalVMConsumptionDisabled(t *testing.T) {
+	exp := New(nil, nil, []string{"team"}, nil, 0)
+	ch := make(chan prometheus.Metric, 100)
+	err := exp.collectHistoricalVMConsumption(ch, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ch) != 0 {
+		t.Errorf("expected 0 metrics when disabled, got %d", len(ch))
+	}
+}
+
+func TestCollectHistoricalVMConsumptionCache(t *testing.T) {
+	callCount := 0
+	srv := histVMAPIServer(t, &callCount)
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	exp := New(client, nil, []string{"team"}, nil, 12)
+
+	baseTime := time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+	exp.nowFunc = func() time.Time { return baseTime }
+
+	// First call — fills cache.
+	ch := make(chan prometheus.Metric, 100)
+	exp.collectHistoricalVMConsumption(ch, nil)
+	if callCount != 1 {
+		t.Fatalf("expected 1 API call, got %d", callCount)
+	}
+
+	// Second call within TTL — uses cache.
+	ch2 := make(chan prometheus.Metric, 100)
+	exp.collectHistoricalVMConsumption(ch2, nil)
+	if callCount != 1 {
+		t.Errorf("expected 1 API call (cached), got %d", callCount)
+	}
+
+	// Advance past TTL.
+	exp.nowFunc = func() time.Time { return baseTime.Add(25 * time.Hour) }
+
+	ch3 := make(chan prometheus.Metric, 100)
+	exp.collectHistoricalVMConsumption(ch3, nil)
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls after TTL, got %d", callCount)
+	}
+}
+
+func TestCollectHistoricalVMConsumptionGhostVM(t *testing.T) {
+	// VM exists in billing but not in OpenStack tags → "Untagged".
+	callCount := 0
+	srv := histVMAPIServer(t, &callCount)
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	// No tags at all — all VMs will be "Untagged".
+	exp := New(client, nil, []string{"team"}, nil, 12)
+	exp.nowFunc = func() time.Time {
+		return time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+	}
+
+	ch := make(chan prometheus.Metric, 100)
+	err := exp.collectHistoricalVMConsumption(ch, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	close(ch)
+
+	// All VMs are "Untagged", so they aggregate into fewer series.
+	// 2026-01: 3000 + 2000 + 1000 = 6000 (all Untagged)
+	// 2026-02: 4000 (Untagged)
+	// Total: 2 series
+	var metrics []prometheus.Metric
+	for m := range ch {
+		metrics = append(metrics, m)
+	}
+
+	if len(metrics) != 2 {
+		t.Fatalf("expected 2 metrics (all Untagged), got %d", len(metrics))
+	}
+}
+
+func TestCollectHistoricalVMConsumptionPrefixOverrides(t *testing.T) {
+	callCount := 0
+	srv := histVMAPIServer(t, &callCount)
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	overrides := TagOverrides{
+		"web": {"team": "Frontend"},
+		"api": {"team": "Backend"},
+	}
+	// No OpenStack tags, but prefix overrides should kick in.
+	exp := New(client, nil, []string{"team"}, overrides, 12)
+	exp.nowFunc = func() time.Time {
+		return time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+	}
+
+	ch := make(chan prometheus.Metric, 100)
+	err := exp.collectHistoricalVMConsumption(ch, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	close(ch)
+
+	// web1 → "Frontend", api1 → "Backend"
+	// 2026-01, Frontend: 3000 + 2000 = 5000
+	// 2026-01, Backend: 1000
+	// 2026-02, Frontend: 4000
+	// Total: 3 series
+	var metrics []prometheus.Metric
+	for m := range ch {
+		metrics = append(metrics, m)
+	}
+
+	if len(metrics) != 3 {
+		t.Fatalf("expected 3 metrics with prefix overrides, got %d", len(metrics))
+	}
+}
+
+func TestCollectHistoricalVMConsumptionEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerCType, headerJSON)
+		w.Write([]byte(`{"status":"ok","data":[]}`))
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	exp := New(client, nil, []string{"team"}, nil, 12)
+	exp.nowFunc = func() time.Time {
+		return time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+	}
+
+	ch := make(chan prometheus.Metric, 100)
+	err := exp.collectHistoricalVMConsumption(ch, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ch) != 0 {
+		t.Errorf("expected 0 metrics for empty response, got %d", len(ch))
+	}
+}
+
+func TestCollectHistoricalVMConsumptionAPIFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(testToken, srv.URL)
+	exp := New(client, nil, []string{"team"}, nil, 12)
+	exp.nowFunc = func() time.Time {
+		return time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+	}
+
+	ch := make(chan prometheus.Metric, 100)
+	err := exp.collectHistoricalVMConsumption(ch, nil)
+	if err == nil {
+		t.Fatal("expected error on API failure, got nil")
+	}
+}
+
+func TestAggregateVMCostByTeamNoExportedTags(t *testing.T) {
+	exp := New(nil, nil, nil, nil, 12)
+	now := time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+
+	items := []api.ConsumptionItem{
+		{
+			ProviderKey: "vpc", Value: 100000,
+			Period:  "2026-01-01T00:00:00",
+			Object:  &api.ConsumptionObject{ID: "s1", Name: "vm1", Type: "cloud_vm"},
+			Metric:  &api.ConsumptionMetric{ID: "cores"},
+		},
+		{
+			ProviderKey: "vpc", Value: 200000,
+			Period:  "2026-01-01T00:00:00",
+			Object:  &api.ConsumptionObject{ID: "s2", Name: "vm2", Type: "cloud_vm"},
+			Metric:  &api.ConsumptionMetric{ID: "cores"},
+		},
+	}
+
+	results := exp.aggregateVMCostByTeam(items, nil, now)
+
+	// No exported tags → all VMs have empty tagsHash → aggregate into 1 series.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result (no tags), got %d", len(results))
+	}
+	if results[0].cost != 3000 {
+		t.Errorf("expected cost 3000, got %f", results[0].cost)
+	}
+}
+
+func TestAggregateVMCostByTeamSkipsNonVM(t *testing.T) {
+	exp := New(nil, nil, []string{"team"}, nil, 12)
+	now := time.Date(2026, 3, 27, 14, 0, 0, 0, time.UTC)
+
+	items := []api.ConsumptionItem{
+		{
+			ProviderKey: "vpc", Value: 100000,
+			Period:  "2026-01-01T00:00:00",
+			Object:  &api.ConsumptionObject{ID: "d1", Name: "disk1", Type: "volume_gigabytes_fast"},
+			Metric:  &api.ConsumptionMetric{ID: "volume"},
+		},
+		{
+			ProviderKey: "vpc", Value: 200000,
+			Period:  "2026-01-01T00:00:00",
+			Object:  nil,
+			Metric:  &api.ConsumptionMetric{ID: "cores"},
+		},
+	}
+
+	results := exp.aggregateVMCostByTeam(items, nil, now)
+
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results (no cloud_vm), got %d", len(results))
+	}
+}
+
+func TestAggregateVMCostByTeamSkipsCurrentMonth(t *testing.T) {
+	exp := New(nil, nil, []string{"team"}, nil, 12)
+	now := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+
+	items := []api.ConsumptionItem{
+		{
+			ProviderKey: "vpc", Value: 999900,
+			Period:  "2026-03-01T00:00:00",
+			Object:  &api.ConsumptionObject{ID: "s1", Name: "vm1", Type: "cloud_vm"},
+			Metric:  &api.ConsumptionMetric{ID: "cores"},
+		},
+	}
+
+	results := exp.aggregateVMCostByTeam(items, nil, now)
+
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results (current month), got %d", len(results))
 	}
 }

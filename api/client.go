@@ -14,7 +14,7 @@ const (
 	DefaultBaseURL = "https://api.servercore.com"
 
 	// DefaultTimeout for HTTP requests.
-	DefaultTimeout = 30 * time.Second
+	DefaultTimeout = 120 * time.Second
 )
 
 // AllProviderKeys lists all available Servercore service provider keys.
